@@ -93,15 +93,27 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: "リクエストの形式が正しくありません" }, 400); }
   if (!str(body.term)) return json({ error: "単語が空です" }, 400);
 
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: SYSTEM }] },
-      contents: [{ role: "user", parts: [{ text: buildPrompt(body) }] }],
-      generationConfig: { responseMimeType: "application/json", responseSchema: SCHEMA },
-    }),
-  });
+  // 速さ優先：考える量（thinking）を最小に。モデルが対応していなければ順に緩める
+  const prompt = buildPrompt(body);
+  const levels = [Deno.env.get("GEMINI_THINKING") || "minimal", "low", ""];
+  let res!: Response;
+  for (const level of [...new Set(levels)]) {
+    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM }] },
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseMimeType: "application/json", responseSchema: SCHEMA,
+          ...(level ? { thinkingConfig: { thinkingLevel: level } } : {}),
+        },
+      }),
+    });
+    if (res.status !== 400) break;
+    const t = await res.clone().text();
+    if (!/thinking/i.test(t)) break; // thinking 以外が原因の 400 はそのまま返す
+  }
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 400);
     const msg = res.status === 429 ? "無料枠の上限に達しました。少し待ってから試してください"
