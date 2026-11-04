@@ -913,7 +913,8 @@ async function runSync() {
   } catch (e) {
     console.error(e);
     const m = e.message || String(e);
-    setSyncState('error', /tango_items|42P01|PGRST20/.test(m + (e.code || '')) ? 'テーブルがありません。supabase/schema.sql を SQL Editor で実行してください' : m);
+    setSyncState('error', /tango_items|42P01|PGRST20/.test(m + (e.code || '')) ? 'テーブルがありません。supabase/schema.sql を SQL Editor で実行してください'
+      : netErr(m) ? 'Supabaseに接続できません（電波、またはProject URLを確認）' : m);
   } finally {
     Sync.running = false;
     if (Sync.again) { Sync.again = false; scheduleSync(500); }
@@ -992,14 +993,30 @@ function syncPanelHTML() {
     <button class="btn primary" onclick="scheduleSync(0)">今すぐ同期</button> <button class="btn" onclick="sbLogout()">ログアウト</button>
     <p class="hint">変更は自動で同期されます。ログアウトしても、この端末の単語は消えません。</p></div>`;
 }
+function cleanSbUrl(v) {
+  let url = v.normalize('NFKC').replace(/\s+/g, '').toLowerCase().replace(/\/+$/, '');
+  if (/^[a-z0-9]{20}$/.test(url)) url = `https://${url}.supabase.co`;          // プロジェクトIDだけ入れた場合
+  if (/^[a-z0-9-]+\.supabase\.co$/.test(url)) url = 'https://' + url;           // https:// を省略した場合
+  return url.replace(/^http:\/\//, 'https://').replace(/\/(rest|auth)\/v1.*$/, '');
+}
 async function saveSbConfig() {
-  const url = $('#sbUrl').value.trim().replace(/\/+$/, ''), key = $('#sbKey').value.trim();
+  const url = cleanSbUrl($('#sbUrl').value), key = $('#sbKey').value.normalize('NFKC').replace(/\s+/g, '');
+  $('#sbUrl').value = url; $('#sbKey').value = key;
   if (!/^https:\/\/.+/.test(url) || !key) return toast('Project URL とキーを入力してください');
   if (/service_role|sb_secret_/.test(key) || (() => { try { return JSON.parse(atob(key.split('.')[1])).role === 'service_role'; } catch (e) { return false; } })())
     return toast('それは管理者用のキーです。anon / publishable key を入れてください', 6000);
+  // 実際につながるか確認
+  try {
+    const res = await fetch(url + '/auth/v1/settings', { headers: { apikey: key } });
+    if (res.status === 401 || res.status === 403) return toast('URLにはつながりましたが、キーが正しくありません。コピーし直してください', 8000);
+    if (!res.ok) return toast(`接続できません（${res.status}）。Project URLを確認してください`, 8000);
+  } catch (e) {
+    return toast(`「${url}」に接続できません。Project URLのつづりを確認してください（${e.message}）`, 10000);
+  }
   LS.set('tango.sbUrl', url); LS.set('tango.sbKey', key);
-  await initSync(); renderSettings();
+  await initSync(); renderSettings(); toast('接続できました。ログインしてください');
 }
+const netErr = m => /failed to fetch|load failed|networkerror|network request failed/i.test(m || '');
 async function resetSbConfig() {
   LS.set('tango.sbUrl', null); LS.set('tango.sbKey', null);
   await initSync(); renderSettings();
@@ -1008,7 +1025,7 @@ async function sbLogin(signup) {
   const email = $('#sbEmail').value.trim(), password = $('#sbPass').value;
   if (!email || password.length < 6) return toast('メールアドレスと6文字以上のパスワードを入力してください');
   const { data, error } = signup ? await Sync.sb.auth.signUp({ email, password }) : await Sync.sb.auth.signInWithPassword({ email, password });
-  if (error) return toast('エラー：' + error.message, 6000);
+  if (error) return toast(netErr(error.message) ? 'Supabaseに接続できません。「接続設定を変更」からProject URLを確認してください' : 'エラー：' + error.message, 8000);
   if (!data.session) return toast('確認メールを送りました。メールのリンクを開いてから「ログイン」してください', 9000);
   Sync.user = data.user; renderSettings(); scheduleSync(0);
   toast('ログインしました。同期を開始します');
