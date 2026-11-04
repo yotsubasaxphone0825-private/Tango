@@ -99,10 +99,22 @@ input[type=color]{padding:2px;height:36px;width:60px}
 .forms-t{border-collapse:collapse;margin-top:4px;font-size:14px}
 .forms-t td{padding:2px 12px 2px 0;border-bottom:1px solid var(--line)}
 .forms-t tr.hl td{background:var(--accent-weak)}
+.center{text-align:center}
+.btns.center{justify-content:center;flex-wrap:wrap}
+.skill-q{text-align:center;color:var(--muted);margin-bottom:10px}
+.ans-row{display:flex;gap:8px;max-width:560px;margin:16px auto 0}
+.ans-row input{font-size:18px}
+.acc-keys{display:flex;gap:4px;justify-content:center;flex-wrap:wrap;margin-top:8px}
+.verdict{text-align:center;font-size:20px;font-weight:700;margin-bottom:6px}
+.verdict.ok{color:var(--ok)}.verdict.close{color:var(--warn)}.verdict.ng{color:var(--danger)}.verdict.self{color:var(--muted);font-size:16px}
+.ans-you{text-align:center;color:var(--muted)}
+.rate .btn.suggest{outline:3px solid var(--accent);outline-offset:1px}
+#micBtn.rec{background:var(--danger);border-color:var(--danger)}
 .conj-q{font-size:20px;margin-top:14px;color:var(--accent);font-weight:600}
 .xitem{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px dashed var(--line);cursor:pointer}
 .xitem input{margin-top:5px}
 .xitem.done{opacity:.55;cursor:default}
+.ai-box{display:flex;flex-direction:column;gap:4px;margin:12px 0 4px;padding:10px;border-radius:10px;background:var(--accent-weak)}
 .ai-row{display:flex;align-items:center;gap:10px;margin:-4px 0 12px;flex-wrap:wrap}
 .ctx-box{background:var(--accent-weak);border-radius:10px;padding:10px 12px;margin-bottom:12px}
 .ctx{border-top:1px dashed var(--line);padding:6px 0}
@@ -187,6 +199,7 @@ mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 1px}
 <div id="modal" class="modal hidden"><div class="modal-box" id="modalBox"></div></div>
 <div id="selPop" class="selpop hidden" onmousedown="event.preventDefault()">
   <button class="btn sm primary" onclick="addFromSelection()">＋ 単語帳に追加</button>
+  <button class="btn sm" onclick="extractFromSelection()">✨ AIで抽出</button>
   <button class="btn sm" onclick="searchSelection()">🔍 資料内を検索</button>
 </div>
 <div id="toast"></div>
@@ -534,14 +547,19 @@ function renderExtract() {
         ${dup ? `<small class="muted">✓ 登録済み${old && !isSrc(c) ? '（チェックでこの例文を追加）' : ''}</small>` : ''}
         <div class="muted" style="white-space:pre-wrap">${esc(c.meaning)}</div></span></label>`;
     }).join('')}
-    <label class="check" style="margin-top:8px"><input type="checkbox" id="xAttach" checked> 元の例文を、追加する単語の例文として付ける</label>
+    <label class="check" style="margin-top:8px"><input type="checkbox" id="xAttach" ${XTR.fromMaterial ? '' : 'checked'}> ${XTR.fromMaterial ? '資料の文（その単語が出てくる1文）を例文として付ける' : '元の例文を、追加する単語の例文として付ける'}</label>
     <div class="btns"><button class="btn primary" onclick="addExtracted()">チェックした単語を追加</button>
       <button class="btn sm" onclick="$$('#exExtract input[data-i]').forEach(x=>x.checked=!x.checked)">チェックを反転</button></div>
     <p class="hint">原形のカードには、追加したあと活用・変化の表をAIが自動で入れます。</p></div>`;
 }
 function xtrExample(c) {
-  const ex = XTR.examples[c.ex] || XTR.examples.find(e => c.surface && e.text.toLowerCase().includes(c.surface.toLowerCase()));
+  let ex = XTR.examples[c.ex] || XTR.examples.find(e => c.surface && e.text.toLowerCase().includes(c.surface.toLowerCase()));
   if (!ex) return null;
+  if (XTR.fromMaterial) { // 資料のかたまりから、その語が出てくる1文だけを取り出す
+    const sents = ex.text.split(/(?<=[。.!?！？])\s+/);
+    const s = sents.find(x => c.surface && x.toLowerCase().includes(c.surface.toLowerCase())) || sents[0];
+    ex = { text: s.trim(), translation: '' };
+  }
   // 原形のカードに付ける例文には「例文中の形 = 変化の種類」をメモ
   const form = c.kind === 'lemma' && c.form && c.surface ? `${c.surface}：${c.form}` : '';
   return { text: ex.text, translation: ex.translation || '', ...(form ? { form } : {}) };
@@ -559,7 +577,8 @@ async function addExtracted() {
     await save('cards', {
       id, deckId: XTR.deckId, term: c.term, reading: c.reading, pos: c.pos, meaning: c.meaning, usage: '',
       lemma: c.kind === 'form' ? c.lemma : '', forms: '',
-      examples: ex ? [ex] : [], tags: ['例文から'], note: XTR.srcTerm ? `「${XTR.srcTerm}」の例文から追加` : '', source: null,
+      examples: ex ? [ex] : [], tags: [XTR.fromMaterial ? '資料から' : '例文から'],
+      note: XTR.note || (XTR.srcTerm ? `「${XTR.srcTerm}」の例文から追加` : ''), source: XTR.source || null,
       srs: newSrs(), createdAt: Date.now(),
     });
     if (c.kind === 'lemma') lemmaIds.push(id);
@@ -707,7 +726,10 @@ function renderStudy() {
       <option value="due">今日の復習（期限が来た単語）</option><option value="all">全部からランダム</option>
       <option value="weak">苦手な単語（間違えたことがある）</option><option value="new">まだ学習していない単語</option>
       <option value="conj">活用クイズ（活用・変化の表から出題）</option></select></div>
-    <div class="fgroup"><label>表に出すもの <small class="muted">（活用クイズでは使いません）</small></label><select id="sDir"><option value="fwd">単語 → 意味を思い出す</option><option value="rev">意味 → 単語を思い出す</option></select></div>
+    <div class="fgroup"><label>練習する技能 <small class="muted">（活用クイズでは使いません）</small></label><select id="sSkill">
+      ${[['read', '📖 読む（カードを見て思い出す）'], ['listen', '🎧 聞く（読み上げを聞いて書き取る）'], ['write', '✍️ 書く（日本語を見て書く）'], ['speak', '🗣️ 話す（日本語を見て声に出す）'], ['mix', '🔀 ミックス（4技能をランダムに）']]
+        .map(([v, l]) => `<option value="${v}" ${UI.studySkill === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    <div class="fgroup"><label>表に出すもの <small class="muted">（「読む」のとき）</small></label><select id="sDir"><option value="fwd">単語 → 意味を思い出す</option><option value="rev">意味 → 単語を思い出す</option></select></div>
     <div class="fgroup"><label>最大問題数</label><input id="sLimit" type="number" value="20" min="1" style="width:120px"></div>
     <button class="btn primary big" onclick="startStudy()">スタート</button>
     <p class="hint">「もう一度」「難しい」「普通」「簡単」の自己評価で、次に出題される日が自動で決まります（間隔反復）。</p></div>`;
@@ -715,19 +737,23 @@ function renderStudy() {
 function startStudy() {
   const decks = $$('input[name=sd]:checked').map(i => i.value);
   if (!decks.length) return toast('単語帳を選んでください');
-  UI.studyDecks = decks;
-  beginSession(decks, $('#sMode').value, $('#sDir').value, Math.max(1, +$('#sLimit').value || 20));
+  UI.studyDecks = decks; UI.studySkill = $('#sSkill').value;
+  beginSession(decks, $('#sMode').value, $('#sDir').value, Math.max(1, +$('#sLimit').value || 20), UI.studySkill);
 }
-function beginSession(decks, mode, dir, limit) {
+function beginSession(decks, mode, dir, limit, skill = 'read') {
   if (mode === 'conj') return beginConjQuiz(decks, limit);
   const now = Date.now(); let cs = S.cards.filter(c => decks.includes(c.deckId));
+  if (skill === 'listen' || skill === 'speak') {
+    cs = cs.filter(c => deckOf(c)?.lang);
+    if (!cs.length) return toast('「聞く」「話す」は、読み上げ言語を設定した単語帳だけで使えます（ホームの ⚙ から設定）', 6000);
+  }
   if (mode === 'due') cs = cs.filter(c => c.srs.due <= now).sort((a, b) => a.srs.due - b.srs.due);
   else if (mode === 'weak') cs = cs.filter(c => c.srs.lapses > 0 || c.srs.ease < 2.3).sort((a, b) => (b.srs.lapses - a.srs.lapses) || (a.srs.ease - b.srs.ease));
   else if (mode === 'new') cs = cs.filter(c => c.srs.reps === 0 && c.srs.lapses === 0).sort((a, b) => a.createdAt - b.createdAt);
   else cs = shuffle(cs);
   cs = shuffle(cs.slice(0, limit));
   if (!cs.length) return toast('出題できる単語がありません');
-  UI.study = { queue: cs.map(c => c.id), pos: 0, flipped: false, dir, counts: { 1:0, 2:0, 3:0, 4:0 }, retried: new Set() };
+  UI.study = { queue: cs.map(c => c.id), pos: 0, flipped: false, dir, skill, tasks: {}, result: null, counts: { 1:0, 2:0, 3:0, 4:0 }, retried: new Set() };
   go('study');
 }
 /* 活用クイズ：原形カードの「活用・変化」表から1つずつ出題（間隔反復の記録には影響しません） */
@@ -788,6 +814,10 @@ function renderSession() {
   }
   const c = S.cards.find(x => x.id === st.queue[st.pos]);
   if (!c) { st.pos++; return renderSession(); }
+  if (st.skill && st.skill !== 'read') {
+    const task = st.tasks[st.pos] ||= makeTask(c, st.skill);
+    if (task.skill !== 'read') return renderSkill(c, task);
+  }
   const d = deckOf(c), t = typeOf(d);
   const termHTML = `<div class="big-term">${esc(c.term)} ${speakBtn(c.term, d)}</div>`;
   const sub = `${c.reading ? `<div class="muted">${esc(c.reading)}</div>` : ''}${c.pos ? `<span class="chip">${esc(c.pos)}</span>` : ''}`;
@@ -806,7 +836,11 @@ function renderSession() {
       <div class="keys muted">キーボード：1〜4 で評価</div>` : ''}`;
   if (!st.flipped && st.dir === 'fwd' && d?.lang && UI.autoSpeak) speak(c.term, d.lang);
 }
-function flip() { if (UI.study && !UI.study.flipped) { UI.study.flipped = true; renderSession(); } }
+function flip() {
+  const st = UI.study; if (!st || st.flipped) return;
+  const task = st.tasks?.[st.pos]; if (task && task.skill !== 'read') return; // 聞く・書く・話すは答え合わせで表示
+  st.flipped = true; renderSession();
+}
 async function rate(r) {
   const st = UI.study; if (st.conj) return;
   const id = st.queue[st.pos]; const c = S.cards.find(x => x.id === id);
@@ -814,7 +848,172 @@ async function rate(r) {
   st.counts[r]++;
   await save('cards', { ...c, srs: schedule(c.srs, r) });
   if (r === 1 && !st.retried.has(id)) { st.queue.push(id); st.retried.add(id); }
-  st.pos++; st.flipped = false; renderSession();
+  stopMic(); if (st.recUrl) { URL.revokeObjectURL(st.recUrl); st.recUrl = null; }
+  st.pos++; st.flipped = false; st.result = null; renderSession();
+}
+
+/* ---------- 4技能：聞く・書く・話す ---------- */
+const ANS = { ignoreCP: (() => { try { return localStorage.getItem('tango.ignoreCP') !== '0'; } catch (e) { return true; } })() }; // カンマ・ピリオドを無視（初期はオン）
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const firstLine = s => String(s || '').split('\n')[0];
+function makeTask(c, skill) {
+  const d = deckOf(c), audio = !!d?.lang;
+  let sk = skill;
+  if (sk === 'mix') sk = pick(audio ? ['read', 'listen', 'write', 'speak'] : ['read', 'write']);
+  if ((sk === 'listen' || sk === 'speak') && !audio) sk = 'write';
+  if (sk === 'read') return { skill: 'read' };
+  const exs = (c.examples || []).filter(e => e.text);
+  const pool = sk === 'write' ? exs.filter(e => e.translation) : exs; // 書く：訳がある例文だけ（訳がないと何を書けばいいかわからない）
+  if (pool.length && Math.random() < 0.7) { const e = pick(pool); return { skill: sk, kind: 'sentence', target: e.text, ja: e.translation || '' }; }
+  return { skill: sk, kind: 'word', target: c.term, ja: firstLine(c.meaning) };
+}
+// 判定用に文字をそろえる：全角/半角・大文字/小文字・¿¡ は区別しない。? と ! は必要（話す場合は記号をすべて無視）
+const stripAcc = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').normalize('NFC');
+function normAns(s, speech) {
+  s = String(s || '').normalize('NFKC').toLowerCase().replace(/[¿¡]/g, '').replace(/[“”„«»"]/g, '"').replace(/[‘’‚`´]/g, "'");
+  if (speech) s = s.replace(/[^\p{L}\p{M}\p{N}'\s]/gu, ' ');
+  else if (ANS.ignoreCP) s = s.replace(/[,.、。…]/g, ' ');
+  return s.replace(/\s*([?!])/g, '$1').replace(/\s+/g, ' ').trim();
+}
+const tokKey = w => stripAcc(normAns(w, true)); // 単語どうしの比較用（記号・アクセント記号なし）
+function lcsMatch(a, b) { // b（正解）のどの単語が a（答え）と一致したか
+  const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--)
+    dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const hit = new Array(b.length).fill(false);
+  for (let i = 0, j = 0; i < a.length && j < b.length;) {
+    if (a[i] === b[j]) { hit[j] = true; i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
+  }
+  return hit;
+}
+function judge(input, target, speech) {
+  const a = normAns(input, speech), b = normAns(target, speech);
+  if (!a) return { level: 'wrong', score: 0 };
+  if (a === b) return { level: 'ok', score: 1 };
+  if (stripAcc(a) === stripAcc(b)) return { level: speech ? 'ok' : 'accent', score: 1 };
+  const np = x => x.replace(/[?!]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (np(a) === np(b)) return { level: 'punct', score: 1 };
+  if (stripAcc(np(a)) === stripAcc(np(b))) return { level: 'accent', score: 1, punct: true };
+  const tb = target.split(/\s+/).map(tokKey).filter(Boolean), ta = input.split(/\s+/).map(tokKey).filter(Boolean);
+  const score = tb.length ? lcsMatch(ta, tb).filter(Boolean).length / tb.length : 0;
+  return { level: score >= 0.75 ? 'close' : 'wrong', score };
+}
+function diffHTML(target, input) { // 正解の文で、答えに足りなかった単語に印を付ける
+  const raw = target.split(/(\s+)/), words = raw.filter((_, i) => i % 2 === 0);
+  const hit = lcsMatch(String(input || '').split(/\s+/).map(tokKey).filter(Boolean), words.map(tokKey));
+  let k = 0;
+  return raw.map((p, i) => i % 2 ? p : (hit[k++] || !tokKey(p) ? esc(p) : `<mark>${esc(p)}</mark>`)).join('');
+}
+const ACCENT_KEYS = { es: 'á é í ó ú ü ñ', fr: 'é è ê ë à â ç ô û ù î ï œ', de: 'ä ö ü ß', pt: 'á â ã à é ê í ó ô õ ú ç', it: 'à è é ì ò ù' };
+function insertChar(ch) { const el = $('#ansIn'); if (!el) return; el.setRangeText(ch, el.selectionStart, el.selectionEnd, 'end'); el.focus(); }
+function answerBox(lang) {
+  const keys = ACCENT_KEYS[(lang || '').slice(0, 2)];
+  return `<div class="ans-row"><input id="ansIn" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="ここに入力して Enter"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();checkAnswer()}"><button class="btn primary" onclick="checkAnswer()">答え合わせ</button></div>
+    ${keys ? `<div class="acc-keys">${keys.split(' ').map(k => `<button class="btn sm" onmousedown="event.preventDefault()" onclick="insertChar('${k}')">${k}</button>`).join('')}</div>` : ''}
+    <div class="btns center"><button class="btn sm" onclick="showHint()">ヒント</button><button class="btn sm" onclick="giveUp()">わからない</button></div><div id="hint" class="muted center"></div>`;
+}
+const curTask = () => UI.study?.tasks?.[UI.study.pos];
+function showHint() { const t = curTask(); if (t) $('#hint').textContent = t.target.replace(/[\p{L}\p{M}]+/gu, w => w[0] + '＿'.repeat(w.length - 1)); }
+function giveUp() { const st = UI.study; st.result = { level: 'wrong', input: '', score: 0, gaveUp: true }; st.flipped = true; renderSession(); }
+function checkAnswer() {
+  const st = UI.study, t = curTask(), v = $('#ansIn')?.value || '';
+  if (!v.trim()) return toast('答えを入力してください');
+  st.result = { ...judge(v, t.target, false), input: v }; st.flipped = true; renderSession();
+}
+function selfCheck() { const st = UI.study; stopMic(); st.result = { level: 'self', input: '' }; st.flipped = true; renderSession(); }
+function speakTarget(rate) { const t = curTask(), c = S.cards.find(x => x.id === UI.study.queue[UI.study.pos]); speakAt(t.target, deckOf(c)?.lang, rate); }
+function speakAt(text, lang, rate = .9) {
+  if (!('speechSynthesis' in window) || !lang) return;
+  speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); u.lang = lang; u.rate = rate; speechSynthesis.speak(u);
+}
+// 話す：ブラウザの音声認識（無料）。使えない端末は録音して自己判定
+let MIC = null;
+function stopMic() { try { MIC?.stop(); } catch (e) {} MIC = null; }
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+function startMic() {
+  const st = UI.study, t = curTask(), lang = deckOf(S.cards.find(x => x.id === st.queue[st.pos]))?.lang;
+  if (MIC) return stopMic();
+  if (!SR) return startRecord();
+  const r = new SR(); MIC = r;
+  r.lang = lang; r.interimResults = true; r.maxAlternatives = 5; r.continuous = false;
+  const out = $('#srOut'), btn = $('#micBtn');
+  btn.textContent = '🎙️ 聞き取り中…（話し終わると止まります）'; btn.classList.add('rec');
+  let alts = null;
+  r.onresult = e => {
+    const full = [...e.results].map(x => x[0].transcript).join(' ');
+    out.textContent = full;
+    const last = e.results[e.results.length - 1];
+    if (last.isFinal) alts = e.results.length === 1 ? [...last].map(a => a.transcript) : [full];
+  };
+  r.onerror = e => { out.textContent = e.error === 'not-allowed' || e.error === 'service-not-allowed' ? 'マイクが許可されていません。ブラウザの設定でマイクを許可してください'
+    : e.error === 'no-speech' ? '声が聞き取れませんでした。もう一度どうぞ' : '音声認識エラー：' + e.error; };
+  r.onend = () => {
+    MIC = null; const b = $('#micBtn'); if (b) { b.textContent = '🎤 話す'; b.classList.remove('rec'); }
+    if (!alts?.length || UI.study !== st || curTask() !== t) return;
+    let best = null; // 候補の中で一番正解に近いものを使う
+    for (const a of alts) { const j = judge(a, t.target, true); if (!best || j.score > best.score || (j.level === 'ok' && best.level !== 'ok')) best = { ...j, input: a }; }
+    st.result = best; st.flipped = true; renderSession();
+  };
+  try { r.start(); } catch (e) { MIC = null; startRecord(); }
+}
+async function startRecord() {
+  const st = UI.study;
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return selfCheck();
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { toast('マイクを使えませんでした。答えを見て自分で判定してください', 5000); return selfCheck(); }
+  const rec = new MediaRecorder(stream), chunks = [];
+  rec.ondataavailable = e => chunks.push(e.data);
+  rec.onstop = () => {
+    stream.getTracks().forEach(tr => tr.stop());
+    if (UI.study !== st) return;
+    st.recUrl = URL.createObjectURL(new Blob(chunks, { type: rec.mimeType }));
+    st.result = { level: 'self', input: '' }; st.flipped = true; renderSession();
+  };
+  rec.start(); MIC = { stop: () => rec.state !== 'inactive' && rec.stop() };
+  const b = $('#micBtn'); if (b) { b.textContent = '⏹ 録音を止める'; b.classList.add('rec'); }
+}
+const VERDICT = {
+  ok: ['⭕ 正解！', 'ok'], accent: ['🔺 惜しい！アクセント記号（á・ñ など）が違います', 'close'], punct: ['🔺 惜しい！「?」「!」を確認してください', 'close'],
+  close: ['🔺 惜しい！印の部分が違います', 'close'], wrong: ['❌ 違います', 'ng'], self: ['お手本と比べて、自分で判定してください', 'self'],
+};
+const SUGGEST = { ok: 3, accent: 2, punct: 2, close: 2, wrong: 1 };
+function renderSkill(c, task) {
+  const st = UI.study, d = deckOf(c), lang = d?.lang || '';
+  const pct = st.pos / st.queue.length * 100;
+  const title = { listen: '🎧 聞く', write: '✍️ 書く', speak: '🗣️ 話す' }[task.skill];
+  const what = task.kind === 'sentence' ? '文' : '単語';
+  let body;
+  if (!st.flipped) {
+    if (task.skill === 'listen') body = `<div class="skill-q">聞こえた${what}を書いてください</div>
+      <div class="btns center"><button class="btn" onclick="speakTarget(.9)">🔊 もう一度</button><button class="btn" onclick="speakTarget(.55)">🐢 ゆっくり</button></div>${answerBox(lang)}`;
+    else if (task.skill === 'write') body = `<div class="skill-q">この意味の${what}を書いてください</div>
+      <div class="big-mean center">${esc(task.ja) || '<span class="muted">（意味未入力）</span>'}</div>${task.kind === 'word' && c.pos ? `<div class="center"><span class="chip">${esc(c.pos)}</span></div>` : ''}${answerBox(lang)}`;
+    else body = task.ja
+      ? `<div class="skill-q">この意味の${what}を声に出して言ってください</div><div class="big-mean center">${esc(task.ja)}</div>`
+      : `<div class="skill-q">声に出して読んでください（音読）</div><div class="big-term center">${esc(task.target)}</div>`;
+    if (task.skill === 'speak') body += `<div class="btns center" style="margin-top:16px"><button id="micBtn" class="btn primary big" onclick="startMic()">🎤 話す</button></div>
+      <div id="srOut" class="center muted" style="min-height:1.6em;margin-top:8px"></div>
+      <div class="btns center"><button class="btn sm" onclick="speakTarget(.9)">お手本を聞く</button><button class="btn sm" onclick="selfCheck()">答えを見て自分で判定</button></div>
+      ${SR ? '' : '<p class="hint center">この端末のブラウザは音声認識に対応していないので、録音してお手本と聞き比べる方式になります</p>'}`;
+  } else {
+    const r = st.result || { level: 'self' }, [vtext, vcls] = VERDICT[r.level];
+    body = `<div class="verdict ${vcls}">${vtext}</div>
+      ${r.input ? `<div class="ans-you">${task.skill === 'speak' ? '聞き取った内容' : 'あなたの答え'}：${esc(r.input)}</div>` : ''}
+      ${st.recUrl ? `<div class="center"><div class="muted">あなたの録音</div><audio controls src="${st.recUrl}"></audio></div>` : ''}
+      <div class="big-term center" style="margin-top:8px">${r.level === 'ok' || r.level === 'self' || r.gaveUp ? esc(task.target) : diffHTML(task.target, r.input)} ${speakBtn(task.target, d)}</div>
+      ${task.ja ? `<div class="center muted">${esc(task.ja)}</div>` : ''}
+      <hr><div class="center"><b>${esc(c.term)}</b> ${c.reading ? `<span class="muted">${esc(c.reading)}</span>` : ''}</div>${cardDetailHTML(c)}`;
+  }
+  const sug = st.flipped ? SUGGEST[st.result?.level] : 0;
+  V.innerHTML = `<div class="study-top"><button class="btn" onclick="stopMic();UI.study=null;render()">終了</button>
+      <div class="progress"><div style="width:${pct}%"></div></div><span class="muted">${st.pos + 1} / ${st.queue.length}</span></div>
+    <div class="flash flipped"><div class="flash-deck">${esc(d?.name)}　${title}</div><div style="padding-top:14px">${body}</div></div>
+    ${st.flipped ? `<div class="rate">${[1, 2, 3, 4].map(n => `<button class="btn rate-${n} ${n === sug ? 'suggest' : ''}" onclick="rate(${n})"><b>${['', 'もう一度', '難しい', '普通', '簡単'][n]}</b><small>${fmtIv(schedule(c.srs, n))}</small></button>`).join('')}</div>
+      <div class="keys muted">${sug ? '枠の付いたボタンがおすすめです。' : ''}キーボード：1〜4 で評価</div>` : ''}`;
+  if (!st.flipped && task.skill === 'listen') setTimeout(() => speakTarget(.9), 250);
+  if (!st.flipped) $('#ansIn')?.focus();
 }
 document.addEventListener('keydown', e => {
   if (UI.view !== 'study' || !UI.study || !$('#modal').classList.contains('hidden')) return;
@@ -827,11 +1026,14 @@ document.addEventListener('keydown', e => {
 /* ---------- 資料（PDF / テキスト） ---------- */
 function renderMaterials() {
   V.innerHTML = `<div class="panel"><h2>資料</h2>
-    <p class="muted" style="margin:0">ITパスポート・基本情報技術者の過去問PDFや参考資料を取り込むと、本文を読みながら用語を選んで単語帳に追加できます。用語の候補も自動で抜き出します。</p>
-    <label class="drop" id="drop"><input type="file" accept=".pdf,.txt,.md,.csv" multiple hidden onchange="handleFiles(this.files);this.value=''">
-      <div style="font-size:28px">📄</div><div>クリックまたはドラッグ＆ドロップで PDF / テキストファイルを追加</div><div id="upStatus" style="margin-top:6px"></div></label>
+    <p class="muted" style="margin:0">過去問・教材・記事などを取り込むと、本文を読みながら単語を選んだり、AIで単語・熟語をまとめて抜き出したりして単語帳に追加できます。</p>
+    <div class="fgroup" style="margin-top:12px"><label>追加先の単語帳</label><select id="upDeck" onchange="UI.upDeck=this.value" style="width:auto">${S.decks.map(d => `<option value="${d.id}" ${d.id === (deckById(UI.upDeck) ? UI.upDeck : defaultItDeck()) ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></div>
+    <label class="drop" id="drop"><input type="file" accept=".pdf,.docx,.xlsx,.xlsm,.xls,.ods,.csv,.tsv,.pptx,.txt,.md,.html,.htm,.srt,.vtt" multiple hidden onchange="handleFiles(this.files);this.value=''">
+      <div style="font-size:28px">📄</div><div>クリックまたはドラッグ＆ドロップでファイルを追加</div>
+      <small>PDF・Word（.docx）・Excel（.xlsx / .xls / .csv）・PowerPoint（.pptx）・テキスト・HTML・字幕（.srt / .vtt）</small>
+      <div id="upStatus" style="margin-top:6px"></div></label>
     <button class="btn" onclick="openPasteMaterial()">テキストを貼り付けて追加</button>
-    <p class="hint">※ スキャン画像だけのPDF（文字が選択できないもの）は文字を読み取れません。IPAが公開している過去問PDFは読み込めます。</p></div>
+    <p class="hint">※ スキャン画像だけのPDF（文字が選択できないもの）は文字を読み取れません。</p></div>
     ${S.materials.length ? S.materials.slice().sort((a, b) => b.createdAt - a.createdAt).map(m => `<div class="panel mat-item">
       <div class="grow"><b>${esc(m.name)}</b><div class="muted"><small>${m.pages.length}ページ ・ ${new Date(m.createdAt).toLocaleDateString()} ・ この資料から追加した単語 ${S.cards.filter(c => c.source?.materialId === m.id).length}件</small></div></div>
       <button class="btn primary" onclick="go('material',{matId:'${m.id}',matPage:0,matQuery:'',matHL:''})">開く</button>
@@ -866,18 +1068,84 @@ async function pdfToPages(file, onProgress) {
   }
   return pages;
 }
+// 大きいライブラリは必要になったときだけ読み込む
+const LIBS = {
+  mammoth: 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js',
+  XLSX: 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
+  JSZip: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+};
+const libLoading = {};
+function loadLib(name) {
+  if (window[name]) return Promise.resolve(window[name]);
+  return libLoading[name] ||= new Promise((res, rej) => {
+    const s = document.createElement('script'); s.src = LIBS[name];
+    s.onload = () => window[name] ? res(window[name]) : rej(new Error('ライブラリを読み込めません'));
+    s.onerror = () => { delete libLoading[name]; rej(new Error('ライブラリを読み込めません（インターネット接続を確認してください）')); };
+    document.head.appendChild(s);
+  });
+}
+async function docxToPages(f) {
+  const mammoth = await loadLib('mammoth');
+  const r = await mammoth.extractRawText({ arrayBuffer: await f.arrayBuffer() });
+  return splitTextPages(r.value);
+}
+async function sheetToPages(f) {
+  const XLSX = await loadLib('XLSX');
+  const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+  const pages = [];
+  for (const name of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, blankrows: false, defval: '' });
+    const text = rows.map(r => r.map(v => String(v).trim()).filter(Boolean).join('　|　')).filter(Boolean).join('\n');
+    if (text.trim()) splitTextPages(`【${name}】\n${text}`).forEach(p => pages.push(p));
+  }
+  return pages;
+}
+async function pptxToPages(f) {
+  const JSZip = await loadLib('JSZip');
+  const zip = await JSZip.loadAsync(await f.arrayBuffer());
+  const slides = Object.keys(zip.files).filter(p => /^ppt\/slides\/slide\d+\.xml$/.test(p))
+    .sort((a, b) => +a.match(/\d+/)[0] - +b.match(/\d+/)[0]);
+  const pages = [];
+  for (const [i, p] of slides.entries()) {
+    const doc = new DOMParser().parseFromString(await zip.file(p).async('string'), 'application/xml');
+    const paras = [...doc.getElementsByTagName('a:p')].map(pp => [...pp.getElementsByTagName('a:t')].map(t => t.textContent).join('')).filter(s => s.trim());
+    if (paras.length) pages.push(normalizeText(`【スライド ${i + 1}】\n` + paras.join('\n')));
+  }
+  return pages;
+}
+function htmlToText(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('script,style,noscript').forEach(e => e.remove());
+  doc.querySelectorAll('br,p,div,li,h1,h2,h3,h4,h5,h6,tr').forEach(e => e.append('\n'));
+  return doc.body?.textContent || '';
+}
+function subsToText(t) { // 字幕（.srt / .vtt）から番号と時刻を消す
+  return t.replace(/^WEBVTT.*$/m, '').split(/\r?\n/).filter(l => !/^\d+$/.test(l.trim()) && !/-->/.test(l)).join('\n').replace(/<[^>]+>/g, '');
+}
+async function fileToPages(f, status) {
+  const ext = (f.name.match(/\.([^.]+)$/)?.[1] || '').toLowerCase();
+  if (ext === 'pdf') return pdfToPages(f, (i, n) => { if (status) status.textContent = `${f.name} を読み込み中… ${i} / ${n} ページ`; });
+  if (status) status.textContent = `${f.name} を読み込み中…`;
+  if (ext === 'docx') return docxToPages(f);
+  if (['xlsx', 'xlsm', 'xls', 'ods'].includes(ext)) return sheetToPages(f);
+  if (ext === 'pptx') return pptxToPages(f);
+  if (ext === 'doc' || ext === 'ppt') throw new Error(`古い形式（.${ext}）は読めません。Office で .${ext}x 形式で保存し直してください`);
+  if (['html', 'htm'].includes(ext)) return splitTextPages(htmlToText(await f.text()));
+  if (['srt', 'vtt'].includes(ext)) return splitTextPages(subsToText(await f.text()));
+  return splitTextPages(await f.text()); // txt / md / csv / tsv など
+}
 async function handleFiles(files) {
   const status = $('#upStatus');
+  const deckId = deckById($('#upDeck')?.value) ? $('#upDeck').value : defaultItDeck();
   for (const f of files) {
     try {
-      const pages = /\.pdf$/i.test(f.name)
-        ? await pdfToPages(f, (i, n) => { if (status) status.textContent = `${f.name} を読み込み中… ${i} / ${n} ページ`; })
-        : splitTextPages(await f.text());
-      if (!pages.join('').trim()) { toast(`${f.name}：文字を読み取れませんでした（画像のみのPDFかもしれません）`, 5000); continue; }
-      await save('materials', { id: uid(), name: f.name, deckId: defaultItDeck(), pages, createdAt: Date.now() });
+      const pages = (await fileToPages(f, status)).filter(p => p.trim());
+      if (!pages.length) { toast(`${f.name}：文字を読み取れませんでした（画像のみのファイルかもしれません）`, 5000); continue; }
+      await save('materials', { id: uid(), name: f.name, deckId, pages, createdAt: Date.now() });
       toast(`${f.name} を追加しました`);
-    } catch (e) { console.error(e); toast(`${f.name} の読み込みに失敗：${e.message}`, 6000); }
+    } catch (e) { console.error(e); toast(`${f.name} の読み込みに失敗：${e.message}`, 7000); }
   }
+  if (status) status.textContent = '';
   if (UI.view === 'materials') renderMaterials();
 }
 function openPasteMaterial() {
@@ -889,7 +1157,7 @@ function openPasteMaterial() {
 }
 async function savePasteMaterial() {
   const text = $('#pText').value; if (!text.trim()) return toast('本文を入力してください');
-  await save('materials', { id: uid(), name: $('#pName').value.trim() || '貼り付けた資料', deckId: defaultItDeck(), pages: splitTextPages(text), createdAt: Date.now() });
+  await save('materials', { id: uid(), name: $('#pName').value.trim() || '貼り付けた資料', deckId: deckById(UI.upDeck) ? UI.upDeck : defaultItDeck(), pages: splitTextPages(text), createdAt: Date.now() });
   closeModal(); renderMaterials();
 }
 async function deleteMaterial(id) {
@@ -898,27 +1166,36 @@ async function deleteMaterial(id) {
   await remove('materials', id); delete UI.candCache[id]; renderMaterials();
 }
 const curMat = () => S.materials.find(m => m.id === UI.matId);
-function highlight(text, term) {
+const reEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function highlight(text, term) { // 大文字・小文字を区別せずに印を付ける
   if (!term) return esc(text);
-  return text.split(term).map(esc).join(`<mark>${esc(term)}</mark>`);
+  return text.split(new RegExp(`(${reEsc(term)})`, 'gi')).map((p, i) => i % 2 ? `<mark>${esc(p)}</mark>` : esc(p)).join('');
 }
-function getContext(text, idx, len) {
-  let s = Math.max(0, idx - 70), e = Math.min(text.length, idx + len + 110);
+function getContext(text, idx, len) { // 前後の文を切り出す（日本語の「。」と英語などの . ! ? の両方）
+  let s = Math.max(0, idx - 90), e = Math.min(text.length, idx + len + 140);
   const before = text.slice(s, idx);
-  const bp = Math.max(before.lastIndexOf('。'), before.lastIndexOf('\n\n'));
-  if (bp >= 0) s += bp + 1;
-  const ap = text.slice(idx + len, e).search(/[。]/);
-  if (ap >= 0) e = idx + len + ap + 1;
+  const bm = [...before.matchAll(/。|\n\n|[.!?](?=\s)/g)].pop();
+  if (bm) s += bm.index + bm[0].length;
+  const am = text.slice(idx + len, e).match(/。|[.!?](?=\s|$)/);
+  if (am) e = idx + len + am.index + 1;
   return text.slice(s, e).replace(/([^\x00-\x7F])\n(?=[^\x00-\x7F])/g, '$1').replace(/\s+/g, ' ').trim();
 }
 function findOccurrences(m, q, max) {
-  const hits = [];
+  const hits = [], ql = q.toLowerCase();
+  const word = /^[\p{L}\p{M}'’-]+$/u.test(q); // ラテン文字の単語なら単語の区切りで探す（「el」が「el**la**」に当たらないように）
+  const latin = word && /[A-Za-zÀ-ɏ]/.test(q);
   m.pages.forEach((t, page) => {
-    let i = t.indexOf(q);
-    while (i >= 0 && hits.length < max) { hits.push({ page, text: getContext(t, i, q.length) }); i = t.indexOf(q, i + q.length); }
+    const tl = t.toLowerCase();
+    let i = tl.indexOf(ql);
+    while (i >= 0 && hits.length < max) {
+      const ok = !latin || (!/[\p{L}\p{M}]/u.test(t[i - 1] || '') && !/[\p{L}\p{M}]/u.test(t[i + q.length] || ''));
+      if (ok) hits.push({ page, text: getContext(t, i, q.length) });
+      i = tl.indexOf(ql, i + ql.length);
+    }
   });
   return hits;
 }
+const matDeckIsLang = m => deckById(m?.deckId)?.type === 'lang';
 function renderMaterial() {
   const m = curMat(); if (!m) return go('materials');
   const n = m.pages.length; UI.matPage = Math.min(Math.max(0, UI.matPage), n - 1);
@@ -935,8 +1212,11 @@ function renderMaterial() {
       <aside class="panel side">
         <input id="matSearch" type="search" placeholder="資料全体から検索" value="${esc(UI.matQuery)}" oninput="UI.matQuery=this.value;renderHits()">
         <div id="hits"></div>
-        <h3>用語候補 <small class="muted">出現回数順</small></h3>
-        <div class="tabs">${[['all', 'すべて'], ['ascii', '英字・略語'], ['kana', 'カタカナ語'], ['kanji', '漢字語'], ['quote', '「」内']].map(([k, l]) => `<button class="${UI.candTab === k ? 'active' : ''}" onclick="UI.candTab='${k}';renderMaterial()">${l}</button>`).join('')}</div>
+        <div class="ai-box"><button class="btn primary sm" onclick="extractFromMaterialPage()">✨ このページからAIで単語・熟語を抽出</button>
+          <small class="muted">本文を選択して「✨ AIで抽出」も使えます</small></div>
+        <h3>${matDeckIsLang(m) ? '単語候補' : '用語候補'} <small class="muted">出現回数順</small></h3>
+        <div class="tabs">${(matDeckIsLang(m) ? [['all', 'すべて'], ['new', '未登録だけ']] : [['all', 'すべて'], ['ascii', '英字・略語'], ['kana', 'カタカナ語'], ['kanji', '漢字語'], ['quote', '「」内']])
+          .map(([k, l]) => `<button class="${(UI.candTab === k || (k === 'all' && !(matDeckIsLang(m) ? ['all', 'new'] : ['all', 'ascii', 'kana', 'kanji', 'quote']).includes(UI.candTab))) ? 'active' : ''}" onclick="UI.candTab='${k}';renderMaterial()">${l}</button>`).join('')}</div>
         <input id="candFilter" placeholder="候補を絞り込み" oninput="renderCands()">
         <div id="cands" class="cands"></div>
         <p class="hint">✓ は登録済み。クリックすると資料内の出現箇所を表示します。</p>
@@ -945,7 +1225,7 @@ function renderMaterial() {
   renderHits(); renderCands();
   if (UI.matHL) $('#matText mark')?.scrollIntoView({ block: 'center' });
 }
-async function setMatDeck(id) { const m = curMat(); await save('materials', { ...m, deckId: id }); }
+async function setMatDeck(id) { const m = curMat(); await save('materials', { ...m, deckId: id }); renderMaterial(); }
 function matJump(p, hl) {
   UI.matPage = p - 1; UI.matHL = hl ? UI.matQuery.trim() : '';
   renderMaterial();
@@ -963,7 +1243,16 @@ function renderHits() {
 }
 const STOP = new Set(['平成','令和','年度','午前','午後','問題','解答','解説','試験','情報処理','情報処理推進機構','独立行政法人','受験','選択肢','記述','組合せ','以下','以上','場合','ページ','解答例','出題趣旨','採点講評','注意事項','試験時間','問題冊子','解答用紙']);
 function getCands(m) {
-  if (UI.candCache[m.id]) return UI.candCache[m.id];
+  const lang = matDeckIsLang(m), key = m.id + (lang ? ':lang' : '');
+  if (UI.candCache[key]) return UI.candCache[key];
+  if (lang) { // 語学：文字の並びを単語として数える（小文字にまとめる）
+    const map = new Map();
+    for (const t of m.pages) for (const x of t.matchAll(/[\p{L}][\p{L}\p{M}]*(?:['’-][\p{L}\p{M}]+)*/gu)) {
+      const w = x[0].toLowerCase(); if (/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(w)) continue;
+      const e = map.get(w) || { w, type: 'word', n: 0 }; e.n++; map.set(w, e);
+    }
+    return UI.candCache[key] = [...map.values()].sort((a, b) => b.n - a.n || a.w.localeCompare(b.w));
+  }
   const map = new Map();
   const add = (w, type) => {
     w = w.replace(/^[・ー]+|[・]+$/g, '').trim();
@@ -977,12 +1266,14 @@ function getCands(m) {
     for (const x of t.matchAll(/[一-龠々]{3,10}/g)) add(x[0], 'kanji');
     for (const x of t.matchAll(/「([^「」\n]{2,25})」/g)) add(x[1], 'quote');
   }
-  return UI.candCache[m.id] = [...map.values()].sort((a, b) => b.n - a.n);
+  return UI.candCache[key] = [...map.values()].sort((a, b) => b.n - a.n);
 }
 function renderCands() {
   const m = curMat(); const f = ($('#candFilter')?.value || '').trim().toLowerCase();
   const reg = new Set(S.cards.map(c => c.term.toLowerCase()));
-  const list = getCands(m).filter(c => (UI.candTab === 'all' || c.type === UI.candTab) && (!f || c.w.toLowerCase().includes(f))).slice(0, 250);
+  const tab = UI.candTab;
+  const list = getCands(m).filter(c => (tab === 'new' ? !reg.has(c.w.toLowerCase()) : (tab === 'all' || c.type === tab || c.type === 'word'))
+    && (!f || c.w.toLowerCase().includes(f))).slice(0, 300);
   $('#cands').innerHTML = list.length ? list.map(c => `<button class="cand ${reg.has(c.w.toLowerCase()) ? 'done' : ''}" data-w="${esc(c.w)}" onclick="pickCand(this.dataset.w)">${reg.has(c.w.toLowerCase()) ? '✓ ' : ''}${esc(c.w)}<small>${c.n}</small></button>`).join('') : '<span class="muted">候補がありません</span>';
 }
 function pickCand(w) {
@@ -1018,6 +1309,44 @@ function addFromSelection() {
   openEditor(null, { deckId: m.deckId, contexts: [{ page: UI.matPage, text: clean }], source: { materialId: m.id, page: UI.matPage } });
   toast('用語名を入力し、抜粋を「意味」や「例文」に挿入してください', 4000);
 }
+// 資料の文章をAIに渡せる大きさ（1かたまり600文字以内・最大10かたまり）に分ける
+function chunkSentences(text, max = 580, n = 10) {
+  const sents = text.replace(/([^\x00-\x7F])\n(?=[^\x00-\x7F])/g, '$1').split(/(?<=[。.!?！？])\s+|\n+/).map(s => s.replace(/\s+/g, ' ').trim()).filter(s => s.length > 1);
+  const chunks = []; let cur = '', used = 0;
+  for (const s of sents) {
+    if (cur && (cur + ' ' + s).length > max) { chunks.push(cur); cur = ''; if (chunks.length >= n) break; }
+    cur = cur ? cur + ' ' + s : s.slice(0, max); used++;
+  }
+  if (cur && chunks.length < n) chunks.push(cur);
+  return { chunks, rest: used < sents.length };
+}
+function extractFromMaterialPage() {
+  const m = curMat(); const { chunks, rest } = chunkSentences(m.pages[UI.matPage] || '');
+  if (!chunks.length) return toast('このページには文章がありません');
+  extractFromText(chunks, rest ? 'ページが長いので前半だけ抽出しました。続きは本文を選択して「✨ AIで抽出」を使ってください' : '');
+}
+function extractFromSelection() {
+  const raw = UI.selText; hideSelPop(); window.getSelection().removeAllRanges();
+  const { chunks, rest } = chunkSentences(raw);
+  if (!chunks.length) return;
+  extractFromText(chunks, rest ? '選択範囲が長いので前半だけ抽出しました' : '');
+}
+async function extractFromText(chunks, notice) {
+  const m = curMat(), deck = deckById(m.deckId);
+  if (!deck) return toast('追加先の単語帳を選んでください');
+  if (!Sync.sb || !Sync.user) return toast('AI機能を使うには「設定」でSupabaseにログインしてください', 5000);
+  modal(`<h3>資料から単語・熟語を抽出</h3><div class="muted" style="margin-bottom:8px">${esc(m.name)} p.${UI.matPage + 1} → 「${esc(deck.name)}」に追加</div>
+    ${notice ? `<div class="warn" style="margin-bottom:8px">${esc(notice)}</div>` : ''}<div id="exExtract"></div>
+    <div class="modal-actions"><span class="grow"></span><button class="btn" onclick="closeModal()">閉じる</button></div>`);
+  $('#exExtract').innerHTML = '<div class="ctx-box muted">✨ 資料から単語を探しています…（長い文章だと少しかかります）</div>';
+  try {
+    const data = await callAi({ mode: 'extract', source: 'material', deckType: deck.type, deckName: deck.name, lang: deck.lang, posOptions: typeOf(deck).posOptions, examples: chunks });
+    if (!$('#exExtract')) return;
+    XTR = { deckId: deck.id, examples: chunks.map(text => ({ text, translation: '' })), srcTerm: '', items: buildCandidates(data.items || []),
+      fromMaterial: true, note: `資料「${m.name}」p.${UI.matPage + 1} から追加`, source: { materialId: m.id, page: UI.matPage } };
+    renderExtract();
+  } catch (e) { const b = $('#exExtract'); if (b) b.innerHTML = `<div class="ctx-box warn">抽出に失敗：${esc(e.message)}</div>`; }
+}
 function searchSelection() {
   const q = UI.selText.trim().replace(/\s+/g, ' '); hideSelPop();
   UI.matQuery = q; $('#matSearch').value = q; renderHits(); $('#matSearch').scrollIntoView({ block: 'nearest' });
@@ -1031,7 +1360,10 @@ function renderSettings() {
     <button class="btn primary" onclick="exportData()">⬇ バックアップを保存（JSON）</button>
     <label class="btn" style="display:inline-block">⬆ バックアップから復元<input type="file" accept=".json" hidden onchange="importData(this.files[0]);this.value=''"></label></div>
   <div class="panel"><h2>学習</h2>
-    <label class="check"><input type="checkbox" ${UI.autoSpeak ? 'checked' : ''} onchange="UI.autoSpeak=this.checked;try{localStorage.setItem('autoSpeak',this.checked?'1':'')}catch(e){}"> 学習中、語学の単語を自動で読み上げる</label></div>
+    <label class="check"><input type="checkbox" ${UI.autoSpeak ? 'checked' : ''} onchange="UI.autoSpeak=this.checked;try{localStorage.setItem('autoSpeak',this.checked?'1':'')}catch(e){}"> 学習中、語学の単語を自動で読み上げる</label>
+    <h3>「聞く」「書く」の答え合わせ</h3>
+    <label class="check"><input type="checkbox" ${ANS.ignoreCP ? 'checked' : ''} onchange="ANS.ignoreCP=this.checked;try{localStorage.setItem('tango.ignoreCP',this.checked?'1':'0')}catch(e){}"> カンマ（,）とピリオド（.）は無視する</label>
+    <p class="hint">・逆さの ¿ ¡ は入力しなくてOKです。ふつうの ? と ! は必要です（全角の ？！ でもOK）<br>・大文字と小文字、全角と半角は区別しません<br>・アクセント記号（á・ñ など）だけが違うときは「惜しい」になります<br>・「話す」は記号を無視して、言葉だけで判定します</p></div>
   <div class="panel"><h2>データの削除</h2><button class="btn danger" onclick="wipeAll()">すべてのデータを削除</button></div>`;
 }
 function exportData() {

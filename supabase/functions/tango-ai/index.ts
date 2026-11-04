@@ -128,16 +128,19 @@ function buildExtractPrompt(b: Record<string, unknown>) {
   const lang = str(b.lang, 20);
   const posOptions = Array.isArray(b.posOptions) ? b.posOptions.map((x) => str(x, 40)).filter(Boolean).slice(0, 20) : [];
   const examples = Array.isArray(b.examples) ? b.examples.map((x) => str(x, 600)).slice(0, 10) : [];
+  const fromMaterial = b.source === "material";
+  const what = fromMaterial ? "学習者が読んでいる資料（教材・記事など）の文章" : "学習者が作った例文";
 
   const guide = deckType === "it"
-    ? `IT用語の単語帳「${deckName}」の例文です。例文中のIT用語・専門用語を抜き出してください（ITパスポート・基本情報技術者試験レベル）。
+    ? `IT用語の単語帳「${deckName}」の${what}です。例文中のIT用語・専門用語を抜き出してください（ITパスポート・基本情報技術者試験レベル）。
 - term: 一般的な表記（略語はそのまま）
 - reading: 読み方。略語なら正式名称
 - pos: 試験の分野
 - meaning: この例文での意味を1〜2文で
 - 一般的な日本語の言葉は除外`
     : deckType === "lang"
-    ? `単語帳「${deckName}」（言語コード: ${lang || "不明"}）の学習者が作った例文です。単語・熟語・決まった言い回しを抜き出してください。
+    ? `単語帳「${deckName}」（言語コード: ${lang || "不明"}）の${what}です。単語・熟語・決まった言い回しを抜き出してください。
+- 文章の中に日本語など学習言語以外の部分があれば、そこは無視する
 - term: 辞書に載っている形（動詞は不定詞・原形、名詞は単数形、形容詞は男性単数形、冠詞は el / un など）。熟語や言い回しは「tener que」「a veces」「look forward to」のようにまとまりで1項目
 - surface: 例文中に実際に出てきた形（活用形のまま）
 - form: surface が term の変化形なら変化の種類（例：「点過去・1人称単数」「未来・1人称複数」「女性複数」「過去分詞」）。同じ形なら空文字
@@ -147,13 +150,13 @@ function buildExtractPrompt(b: Record<string, unknown>) {
 - lemmaMeaning: 原形の基本的な意味
 - 冠詞・前置詞・接続詞・代名詞・所有詞などの基本的な語も、学習者は勉強中なので必ず含める
 - 固有名詞と数字だけは除外`
-    : `単語帳「${deckName}」の例文です。覚える価値のある語句を抜き出してください。
+    : `単語帳「${deckName}」の${what}です。覚える価値のある語句を抜き出してください。
 - term: 見出し語の形
 - meaning: この例文での意味を日本語で簡潔に`;
 
   return [
     guide,
-    "- 同じ surface は1回だけ。最大30個。例文に出てくる順に並べる",
+    `- 同じ surface は1回だけ。最大${fromMaterial ? 40 : 30}個。文章に出てくる順に並べる`,
     posOptions.length ? `pos は次の候補から選んでください（合わなければ自由に）：${posOptions.join(" / ")}` : "",
     `<例文>\n${examples.map((e, i) => `${i}: ${e}`).join("\n")}\n</例文>`,
   ].filter(Boolean).join("\n\n");
@@ -242,7 +245,7 @@ Deno.serve(async (req) => {
     })).filter((it) => {
       const k = (it.surface || it.term).toLowerCase();
       return it.term && !seen.has(k) && seen.add(k);
-    }).slice(0, 30);
+    }).slice(0, 40);
     return json({ items });
   }
 
