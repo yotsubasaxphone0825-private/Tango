@@ -95,6 +95,9 @@ input[type=color]{padding:2px;height:36px;width:60px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .ex-row{display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:6px;align-items:start}
 .warn{color:var(--warn);font-size:13px;margin-top:4px}
+.xitem{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px dashed var(--line);cursor:pointer}
+.xitem input{margin-top:5px}
+.xitem.done{opacity:.55;cursor:default}
 .ai-row{display:flex;align-items:center;gap:10px;margin:-4px 0 12px;flex-wrap:wrap}
 .ctx-box{background:var(--accent-weak);border-radius:10px;padding:10px 12px;margin-bottom:12px}
 .ctx{border-top:1px dashed var(--line);padding:6px 0}
@@ -390,7 +393,8 @@ function openEditor(cardId, o = {}) {
         <div class="ctx-btns"><button class="btn sm" onclick="ctxTo(${i},'eMeaning')">→ <span data-l="meaning"></span></button><button class="btn sm" onclick="ctxTo(${i},'eUsage')">→ <span data-l="usage"></span></button><button class="btn sm" onclick="ctxTo(${i},'ex')">→ <span data-l="ex"></span></button></div></div>`).join('')}</div>` : ''}
     <div class="fgroup"><label data-l="meaning"></label><textarea id="eMeaning" rows="3">${esc(v.meaning)}</textarea></div>
     <div class="fgroup"><label data-l="usage"></label><textarea id="eUsage" rows="2">${esc(v.usage)}</textarea></div>
-    <div class="fgroup"><label data-l="ex"></label><div id="eExs">${v.examples.map(exRow).join('')}</div><button class="btn sm" onclick="addExRow().querySelector('textarea').focus()">＋ 追加</button></div>
+    <div class="fgroup"><label data-l="ex"></label><div id="eExs">${v.examples.map(exRow).join('')}</div><button class="btn sm" onclick="addExRow().querySelector('textarea').focus()">＋ 追加</button>
+      <button class="btn sm" onclick="extractFromExamples('editor')">🔍 例文から単語を抽出</button><div id="exExtract" class="hidden" style="margin-top:8px"></div></div>
     <div class="fgroup"><label>タグ <small class="muted">スペース区切り（例：重要 過去問R5）</small></label><input id="eTags" value="${esc((v.tags || []).join(' '))}"></div>
     <div class="fgroup"><label>メモ</label><textarea id="eNote" rows="2">${esc(v.note)}</textarea></div>
     <div class="modal-actions"><span class="grow"></span><button class="btn" onclick="closeModal()">キャンセル</button>
@@ -420,28 +424,34 @@ function ctxTo(i, target) {
   }
   const el = $('#' + target); el.value = el.value.trim() ? el.value.trim() + '\n' + text : text; el.focus();
 }
+// Edge Function「tango-ai」を呼び出す（エラーはわかりやすい文言にして投げる）
+async function callAi(body) {
+  if (!Sync.sb || !Sync.user) throw new Error('AI機能を使うには「設定」でSupabaseにログインしてください');
+  const { data, error } = await Sync.sb.functions.invoke('tango-ai', { body });
+  if (error) {
+    let msg = error.message;
+    if (error.name === 'FunctionsFetchError') msg = 'AI機能に接続できません（Edge Function「tango-ai」がデプロイされているか確認してください）';
+    try {
+      const r = error.context;
+      if (r?.status === 404) msg = 'Edge Function「tango-ai」が見つかりません';
+      else {
+        if (r?.status === 503 || r?.status === 546) msg = 'Edge Functionが起動できませんでした（Supabaseでコードを貼り直して再デプロイしてください）';
+        const b = await r.json(); if (b?.error) msg = b.error;
+      }
+    } catch (e) {}
+    throw new Error(msg);
+  }
+  return data;
+}
 async function aiFill() {
   if (!Sync.sb || !Sync.user) return toast('AI自動入力を使うには「設定」でSupabaseにログインしてください', 5000);
   const term = $('#eTerm').value.trim(); if (!term) return toast('先に単語を入力してください');
   const deck = deckById($('#eDeck').value), t = typeOf(deck);
   const btn = $('#aiBtn'); btn.disabled = true; btn.textContent = '✨ 生成中…';
   try {
-    const { data, error } = await Sync.sb.functions.invoke('tango-ai', { body: {
+    const data = await callAi({
       term, deckType: deck.type, deckName: deck.name, lang: deck.lang, posOptions: t.posOptions,
-      contexts: (EDIT?.contexts || []).map(c => c.text).slice(0, 5) } });
-    if (error) {
-      let msg = error.message;
-      if (error.name === 'FunctionsFetchError') msg = 'AI機能に接続できません（Edge Function「tango-ai」がデプロイされているか確認してください）';
-      try {
-        const r = error.context;
-        if (r?.status === 404) msg = 'Edge Function「tango-ai」が見つかりません';
-        else {
-          if (r?.status === 503 || r?.status === 546) msg = 'Edge Functionが起動できませんでした（Supabaseでコードを貼り直して再デプロイしてください）';
-          const b = await r.json(); if (b?.error) msg = b.error;
-        }
-      } catch (e) {}
-      throw new Error(msg);
-    }
+      contexts: (EDIT?.contexts || []).map(c => c.text).slice(0, 5) });
     if (!$('#eTerm') || $('#eTerm').value.trim() !== term) return; // 画面が変わった
     let filled = 0;
     const set = (id, val) => { const el = $('#' + id); if (val && !el.value.trim()) { el.value = val; filled++; } };
@@ -450,6 +460,66 @@ async function aiFill() {
     toast(filled ? `${filled}項目を自動入力しました。内容を確認して、例文は自分で作ってください` : '空いている欄がないので、何も変更しませんでした', 5000);
   } catch (e) { toast('自動入力に失敗：' + e.message, 8000); }
   finally { const b = $('#aiBtn'); if (b) { b.disabled = false; b.textContent = '✨ AIで自動入力'; } }
+}
+
+/* ---------- 例文から単語・熟語を抽出して追加 ---------- */
+let XTR = null;
+// where: 'editor'（編集中の画面から）または カードID（一覧から）
+async function extractFromExamples(where) {
+  let deck, examples, srcTerm, srcId = null;
+  if (where === 'editor') {
+    deck = deckById($('#eDeck').value); srcTerm = $('#eTerm').value.trim(); srcId = EDIT?.id || null;
+    examples = $$('#eExs .ex-row').map(r => ({ text: r.querySelector('.ex-text').value.trim(), translation: r.querySelector('.ex-tr').value.trim() })).filter(e => e.text);
+  } else {
+    const c = S.cards.find(x => x.id === where); if (!c) return;
+    deck = deckOf(c); srcTerm = c.term; srcId = c.id; examples = c.examples || [];
+  }
+  if (!examples.length) return toast('先に例文を入力してください');
+  if (!Sync.sb || !Sync.user) return toast('AI機能を使うには「設定」でSupabaseにログインしてください', 5000);
+  if (where !== 'editor') modal(`<h3>例文から単語を抽出</h3><div class="muted" style="margin-bottom:8px">「${esc(srcTerm)}」の例文</div><div id="exExtract"></div>
+    <div class="modal-actions"><span class="grow"></span><button class="btn" onclick="closeModal()">閉じる</button></div>`);
+  const box = $('#exExtract'); box.classList.remove('hidden');
+  box.innerHTML = '<div class="ctx-box muted">✨ 例文から単語を探しています…</div>';
+  try {
+    const data = await callAi({ mode: 'extract', deckType: deck.type, deckName: deck.name, lang: deck.lang,
+      posOptions: typeOf(deck).posOptions, examples: examples.map(e => e.text).slice(0, 10) });
+    if (!$('#exExtract')) return; // 画面が閉じられた
+    XTR = { deckId: deck.id, examples, srcTerm, srcId, items: data.items || [] };
+    renderExtract();
+  } catch (e) { const b = $('#exExtract'); if (b) b.innerHTML = `<div class="ctx-box warn">抽出に失敗：${esc(e.message)}</div>`; }
+}
+function renderExtract() {
+  const box = $('#exExtract'); if (!box || !XTR) return;
+  const reg = new Map(S.cards.filter(c => c.deckId === XTR.deckId).map(c => [c.term.toLowerCase(), c]));
+  const isDup = it => reg.has(it.term.toLowerCase()) || it.term.toLowerCase() === XTR.srcTerm.toLowerCase();
+  if (!XTR.items.length) { box.innerHTML = '<div class="ctx-box muted">追加できそうな単語は見つかりませんでした</div>'; return; }
+  const left = XTR.items.filter(it => !isDup(it)).length;
+  box.innerHTML = `<div class="ctx-box"><div class="fl">🔍 例文から見つかった単語・熟語 <span class="muted">— 追加するものにチェック</span></div>
+    ${XTR.items.map((it, i) => { const dup = isDup(it); return `<label class="xitem ${dup ? 'done' : ''}"><input type="checkbox" data-i="${i}" ${dup ? 'disabled' : 'checked'}>
+      <span><b>${esc(it.term)}</b>${it.surface && it.surface.toLowerCase() !== it.term.toLowerCase() ? ` <small class="muted">← ${esc(it.surface)}</small>` : ''}
+      ${it.pos ? `<span class="chip">${esc(it.pos)}</span>` : ''}${dup ? ' <small class="muted">✓ 登録済み</small>' : ''}
+      <div class="muted">${esc(it.meaning)}</div></span></label>`; }).join('')}
+    ${left ? `<label class="check" style="margin-top:8px"><input type="checkbox" id="xAttach" checked> 元の例文を、追加する単語の例文として付ける</label>
+    <div class="btns"><button class="btn primary" onclick="addExtracted()">チェックした単語を追加</button>
+      <button class="btn sm" onclick="$$('#exExtract input[data-i]:not(:disabled)').forEach(x=>x.checked=!x.checked)">チェックを反転</button></div>`
+      : '<div class="muted" style="margin-top:6px">すべて登録済みです</div>'}</div>`;
+}
+async function addExtracted() {
+  const sel = $$('#exExtract input[data-i]:checked').map(x => XTR.items[+x.dataset.i]);
+  if (!sel.length) return toast('追加する単語にチェックを入れてください');
+  const attach = $('#xAttach')?.checked;
+  for (const it of sel) {
+    const ex = XTR.examples[it.ex] || XTR.examples.find(e => it.surface && e.text.toLowerCase().includes(it.surface.toLowerCase()));
+    await save('cards', {
+      id: uid(), deckId: XTR.deckId, term: it.term, reading: it.reading, pos: it.pos, meaning: it.meaning, usage: '',
+      examples: attach && ex ? [{ text: ex.text, translation: ex.translation || '' }] : [],
+      tags: ['例文から'], note: XTR.srcTerm ? `「${XTR.srcTerm}」の例文から追加` : '', source: null,
+      srs: newSrs(), createdAt: Date.now(),
+    });
+  }
+  toast(`${sel.length}語を単語帳に追加しました`);
+  renderExtract();
+  if (UI.view !== 'study') render();
 }
 async function saveEditor(next) {
   const deck = deckById($('#eDeck').value);
@@ -515,7 +585,7 @@ function renderListItems() {
       <div class="item-body"><div><b class="term">${esc(c.term)}</b> ${speakBtn(c.term, d)} ${c.reading ? `<span class="muted">${esc(c.reading)}</span>` : ''} ${c.pos ? `<span class="chip">${esc(c.pos)}</span>` : ''}</div>
       <div class="item-mean">${esc((c.meaning || '').split('\n')[0]) || '<span class="muted">（意味未入力）</span>'}</div></div>
       <span class="badge" style="--deck:${esc(d?.color || '#888')}">${esc(d?.name || '?')}</span></div>
-      <div class="item-detail">${cardDetailHTML(c)}<div class="btns"><button class="btn" onclick="openEditor('${c.id}')">編集</button><button class="btn danger" onclick="deleteCard('${c.id}')">削除</button></div></div></div>`;
+      <div class="item-detail">${cardDetailHTML(c)}<div class="btns"><button class="btn" onclick="openEditor('${c.id}')">編集</button>${c.examples?.length ? `<button class="btn" onclick="extractFromExamples('${c.id}')">🔍 例文から単語を抽出</button>` : ''}<button class="btn danger" onclick="deleteCard('${c.id}')">削除</button></div></div></div>`;
   }).join('') : `<div class="empty">${q ? '見つかりませんでした' : 'まだ単語がありません。「＋ 単語を追加」から登録しましょう'}</div>`;
 }
 
