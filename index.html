@@ -432,7 +432,14 @@ async function aiFill() {
     if (error) {
       let msg = error.message;
       if (error.name === 'FunctionsFetchError') msg = 'AI機能に接続できません（Edge Function「tango-ai」がデプロイされているか確認してください）';
-      try { const r = error.context; if (r?.status === 404) msg = 'Edge Function「tango-ai」が見つかりません'; else { const b = await r.json(); if (b?.error) msg = b.error; } } catch (e) {}
+      try {
+        const r = error.context;
+        if (r?.status === 404) msg = 'Edge Function「tango-ai」が見つかりません';
+        else {
+          if (r?.status === 503 || r?.status === 546) msg = 'Edge Functionが起動できませんでした（Supabaseでコードを貼り直して再デプロイしてください）';
+          const b = await r.json(); if (b?.error) msg = b.error;
+        }
+      } catch (e) {}
       throw new Error(msg);
     }
     if (!$('#eTerm') || $('#eTerm').value.trim() !== term) return; // 画面が変わった

@@ -93,30 +93,41 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: "リクエストの形式が正しくありません" }, 400); }
   if (!str(body.term)) return json({ error: "単語が空です" }, 400);
 
-  // 速さ優先：考える量（thinking）を最小に。モデルが対応していなければ順に緩める
   const prompt = buildPrompt(body);
-  const levels = [Deno.env.get("GEMINI_THINKING") || "minimal", "low", ""];
+  // 速さ優先：考える量（thinking）を最小に。モデルが対応していなければ順に緩める
+  const callModel = async (m: string) => {
+    let r!: Response;
+    for (const level of [...new Set([Deno.env.get("GEMINI_THINKING") || "minimal", "low", ""])]) {
+      r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM }] },
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: {
+            responseMimeType: "application/json", responseSchema: SCHEMA,
+            ...(level ? { thinkingConfig: { thinkingLevel: level } } : {}),
+          },
+        }),
+      });
+      if (r.status !== 400 || !/thinking/i.test(await r.clone().text())) break; // thinking 以外の 400 はそのまま
+    }
+    return r;
+  };
+  // 混雑（503など）や回数上限（429）のときは、少し待ってやり直し → 別の無料モデルに切り替え
+  const fallback = Deno.env.get("GEMINI_FALLBACK_MODEL") || "gemini-3.5-flash-lite";
+  const plan = [model, model, ...(fallback !== model ? [fallback] : [])];
   let res!: Response;
-  for (const level of [...new Set(levels)]) {
-    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseMimeType: "application/json", responseSchema: SCHEMA,
-          ...(level ? { thinkingConfig: { thinkingLevel: level } } : {}),
-        },
-      }),
-    });
-    if (res.status !== 400) break;
-    const t = await res.clone().text();
-    if (!/thinking/i.test(t)) break; // thinking 以外が原因の 400 はそのまま返す
+  for (let i = 0; i < plan.length; i++) {
+    if (i === 1) await new Promise((r) => setTimeout(r, 1500));
+    res = await callModel(plan[i]);
+    if (res.ok || ![429, 500, 503, 504].includes(res.status)) break;
+    if (res.status === 429 && i === 0) i = 1; // 回数上限なら同じモデルで待たずに切り替え
   }
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 400);
     const msg = res.status === 429 ? "無料枠の上限に達しました。少し待ってから試してください"
+      : res.status === 503 || res.status === 500 || res.status === 504 ? "Googleのサーバーが混み合っています。少し待ってからもう一度試してください"
       : res.status === 400 || res.status === 403 ? "Gemini APIキーまたはモデル名を確認してください"
       : `Gemini API エラー（${res.status}）`;
     return json({ error: msg, detail }, res.status === 429 ? 429 : 502);
