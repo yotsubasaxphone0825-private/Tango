@@ -95,6 +95,11 @@ input[type=color]{padding:2px;height:36px;width:60px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .ex-row{display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin-bottom:6px;align-items:start}
 .warn{color:var(--warn);font-size:13px;margin-top:4px}
+.forms summary{cursor:pointer}
+.forms-t{border-collapse:collapse;margin-top:4px;font-size:14px}
+.forms-t td{padding:2px 12px 2px 0;border-bottom:1px solid var(--line)}
+.forms-t tr.hl td{background:var(--accent-weak)}
+.conj-q{font-size:20px;margin-top:14px;color:var(--accent);font-weight:600}
 .xitem{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px dashed var(--line);cursor:pointer}
 .xitem input{margin-top:5px}
 .xitem.done{opacity:.55;cursor:default}
@@ -202,6 +207,7 @@ const V = $('#view');
 /* ---------- 単語帳の種類ごとの入力欄 ---------- */
 const TYPES = {
   lang: { label:'語学', term:'単語・フレーズ', reading:'発音・読み', pos:'品詞', meaning:'意味', usage:'用法・ニュアンス', ex:'例文', exTr:'訳',
+          lemma:'原形（変化した形のとき）', forms:'活用・変化',
           posOptions:['名詞','動詞','形容詞','副詞','前置詞','接続詞','代名詞','冠詞','間投詞','熟語・フレーズ','その他'] },
   it:   { label:'IT用語', term:'用語', reading:'読み・正式名称', pos:'分野', meaning:'意味・説明', usage:'ポイント・覚え方', ex:'出題例・使用例', exTr:'補足',
           posOptions:['ストラテジ','マネジメント','テクノロジ','ネットワーク','セキュリティ','データベース','アルゴリズム・プログラミング','ハードウェア','ソフトウェア','システム開発','法務','経営・会計','その他'] },
@@ -370,7 +376,7 @@ async function deleteDeck(id) {
 
 /* ---------- 単語の追加・編集 ---------- */
 function exRow(e = {}) {
-  return `<div class="ex-row"><textarea class="ex-text" rows="2" placeholder="例文">${esc(e.text || '')}</textarea>
+  return `<div class="ex-row" data-form="${esc(e.form || '')}"><textarea class="ex-text" rows="2" placeholder="例文">${esc(e.text || '')}</textarea>
     <input class="ex-tr" placeholder="訳" value="${esc(e.translation || '')}"><button class="icon-btn" title="削除" onclick="this.parentElement.remove()">✕</button></div>`;
 }
 function addExRow(e) { $('#eExs').insertAdjacentHTML('beforeend', exRow(e)); editorLabels(); return $('#eExs').lastElementChild; }
@@ -378,7 +384,7 @@ function openEditor(cardId, o = {}) {
   if (!S.decks.length) { toast('先に単語帳を作成してください'); return openDeckEditor(); }
   const c = cardId ? S.cards.find(x => x.id === cardId) : null;
   const deckId = c?.deckId || (deckById(o.deckId) ? o.deckId : null) || (deckById(UI.listDeck) ? UI.listDeck : S.decks[0].id);
-  const v = c || { term: o.term || '', reading:'', pos:'', meaning:'', usage:'', examples:[], tags:[], note:'' };
+  const v = c || { term: o.term || '', reading:'', pos:'', lemma:'', forms:'', meaning:'', usage:'', examples:[], tags:[], note:'' };
   EDIT = { id: c?.id || null, contexts: o.contexts || [], source: c?.source || o.source || null };
   modal(`<h3>${c ? '単語を編集' : '単語を追加'}</h3>
     <div class="fgroup"><label>単語帳</label><select id="eDeck" onchange="editorLabels();dupCheck()">${S.decks.map(d => `<option value="${d.id}" ${d.id === deckId ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></div>
@@ -387,12 +393,17 @@ function openEditor(cardId, o = {}) {
       <div class="fgroup"><label data-l="reading"></label><input id="eReading" value="${esc(v.reading)}"></div>
     </div>
     <div class="ai-row"><button class="btn" id="aiBtn" onclick="aiFill()">✨ AIで自動入力</button><small class="muted">例文以外の空いている欄をAIが埋めます</small></div>
-    <div class="fgroup"><label data-l="pos"></label><input id="ePos" list="posList" value="${esc(v.pos)}" placeholder="選択または自由入力"><datalist id="posList"></datalist></div>
+    <div class="grid2">
+      <div class="fgroup"><label data-l="pos"></label><input id="ePos" list="posList" value="${esc(v.pos)}" placeholder="選択または自由入力"><datalist id="posList"></datalist></div>
+      <div class="fgroup lang-only"><label data-l="lemma"></label><input id="eLemma" value="${esc(v.lemma || '')}" placeholder="例：fui → ir"></div>
+    </div>
     ${EDIT.contexts.length ? `<div class="ctx-box"><div class="fl">📄 資料からの抜粋 <span class="muted">— ボタンで各欄に挿入できます（挿入後に編集OK）</span></div>
       ${EDIT.contexts.map((x, i) => `<div class="ctx"><div class="ctx-text">${x.page != null ? `<small class="muted">p.${x.page + 1}</small> ` : ''}${esc(x.text)}</div>
         <div class="ctx-btns"><button class="btn sm" onclick="ctxTo(${i},'eMeaning')">→ <span data-l="meaning"></span></button><button class="btn sm" onclick="ctxTo(${i},'eUsage')">→ <span data-l="usage"></span></button><button class="btn sm" onclick="ctxTo(${i},'ex')">→ <span data-l="ex"></span></button></div></div>`).join('')}</div>` : ''}
     <div class="fgroup"><label data-l="meaning"></label><textarea id="eMeaning" rows="3">${esc(v.meaning)}</textarea></div>
     <div class="fgroup"><label data-l="usage"></label><textarea id="eUsage" rows="2">${esc(v.usage)}</textarea></div>
+    <div class="fgroup lang-only"><label><span data-l="forms"></span> <small class="muted">1行に「ラベル: 形」（例：点過去 yo: fui）。活用クイズに使います</small></label>
+      <textarea id="eForms" rows="4" placeholder="直説法現在 yo: voy&#10;点過去 yo: fui&#10;未来 nosotros: iremos">${esc(v.forms || '')}</textarea></div>
     <div class="fgroup"><label data-l="ex"></label><div id="eExs">${v.examples.map(exRow).join('')}</div><button class="btn sm" onclick="addExRow().querySelector('textarea').focus()">＋ 追加</button>
       <button class="btn sm" onclick="extractFromExamples('editor')">🔍 例文から単語を抽出</button><div id="exExtract" class="hidden" style="margin-top:8px"></div></div>
     <div class="fgroup"><label>タグ <small class="muted">スペース区切り（例：重要 過去問R5）</small></label><input id="eTags" value="${esc((v.tags || []).join(' '))}"></div>
@@ -405,7 +416,8 @@ function openEditor(cardId, o = {}) {
 }
 function editorLabels() {
   const t = typeOf(deckById($('#eDeck').value));
-  $$('#modalBox [data-l]').forEach(el => el.textContent = t[el.dataset.l]);
+  $$('#modalBox [data-l]').forEach(el => el.textContent = t[el.dataset.l] || '');
+  $$('#modalBox .lang-only').forEach(el => el.classList.toggle('hidden', !t.forms));
   $$('#modalBox .ex-text').forEach(el => el.placeholder = t.ex);
   $$('#modalBox .ex-tr').forEach(el => el.placeholder = t.exTr);
   $('#posList').innerHTML = t.posOptions.map(p => `<option value="${esc(p)}">`).join('');
@@ -456,6 +468,7 @@ async function aiFill() {
     let filled = 0;
     const set = (id, val) => { const el = $('#' + id); if (val && !el.value.trim()) { el.value = val; filled++; } };
     set('eReading', data.reading); set('ePos', data.pos); set('eMeaning', data.meaning); set('eUsage', data.usage); set('eNote', data.note);
+    if (t.forms) { set('eLemma', data.lemma); set('eForms', data.forms); }
     if (data.tags?.length && !$('#eTags').value.trim()) { $('#eTags').value = data.tags.join(' '); filled++; }
     toast(filled ? `${filled}項目を自動入力しました。内容を確認して、例文は自分で作ってください` : '空いている欄がないので、何も変更しませんでした', 5000);
   } catch (e) { toast('自動入力に失敗：' + e.message, 8000); }
@@ -484,42 +497,100 @@ async function extractFromExamples(where) {
     const data = await callAi({ mode: 'extract', deckType: deck.type, deckName: deck.name, lang: deck.lang,
       posOptions: typeOf(deck).posOptions, examples: examples.map(e => e.text).slice(0, 10) });
     if (!$('#exExtract')) return; // 画面が閉じられた
-    XTR = { deckId: deck.id, examples, srcTerm, srcId, items: data.items || [] };
+    XTR = { deckId: deck.id, examples, srcTerm, srcId, items: buildCandidates(data.items || []) };
     renderExtract();
   } catch (e) { const b = $('#exExtract'); if (b) b.innerHTML = `<div class="ctx-box warn">抽出に失敗：${esc(e.message)}</div>`; }
 }
+// AIの抽出結果を「追加候補」にする。変化形（fui）は、変化形のカードと原形（ir）のカードの2つに分ける
+function buildCandidates(items) {
+  const out = [], seen = new Set();
+  const push = c => { const k = c.term.toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push(c); } };
+  for (const it of items) {
+    const surface = it.surface || it.term;
+    if (it.form && surface.toLowerCase() !== it.term.toLowerCase()) {
+      push({ kind: 'form', term: surface, lemma: it.term, form: it.form, surface, reading: it.reading, pos: it.pos, ex: it.ex,
+        meaning: `${it.term}${it.lemmaMeaning ? `（${it.lemmaMeaning}）` : ''}の${it.form}${it.meaning ? '\n' + it.meaning : ''}` });
+      push({ kind: 'lemma', term: it.term, form: it.form, surface, reading: '', pos: it.pos, ex: it.ex, meaning: it.lemmaMeaning || it.meaning, fromForm: true });
+    } else {
+      push({ kind: 'lemma', term: it.term, surface, reading: it.reading, pos: it.pos, ex: it.ex, meaning: it.meaning });
+    }
+  }
+  return out;
+}
+const xtrExisting = c => S.cards.find(x => x.deckId === XTR.deckId && x.term.toLowerCase() === c.term.toLowerCase());
 function renderExtract() {
   const box = $('#exExtract'); if (!box || !XTR) return;
-  const reg = new Map(S.cards.filter(c => c.deckId === XTR.deckId).map(c => [c.term.toLowerCase(), c]));
-  const isDup = it => reg.has(it.term.toLowerCase()) || it.term.toLowerCase() === XTR.srcTerm.toLowerCase();
   if (!XTR.items.length) { box.innerHTML = '<div class="ctx-box muted">追加できそうな単語は見つかりませんでした</div>'; return; }
-  const left = XTR.items.filter(it => !isDup(it)).length;
+  const isSrc = c => c.term.toLowerCase() === (XTR.srcTerm || '').toLowerCase();
   box.innerHTML = `<div class="ctx-box"><div class="fl">🔍 例文から見つかった単語・熟語 <span class="muted">— 追加するものにチェック</span></div>
-    ${XTR.items.map((it, i) => { const dup = isDup(it); return `<label class="xitem ${dup ? 'done' : ''}"><input type="checkbox" data-i="${i}" ${dup ? 'disabled' : 'checked'}>
-      <span><b>${esc(it.term)}</b>${it.surface && it.surface.toLowerCase() !== it.term.toLowerCase() ? ` <small class="muted">← ${esc(it.surface)}</small>` : ''}
-      ${it.pos ? `<span class="chip">${esc(it.pos)}</span>` : ''}${dup ? ' <small class="muted">✓ 登録済み</small>' : ''}
-      <div class="muted">${esc(it.meaning)}</div></span></label>`; }).join('')}
-    ${left ? `<label class="check" style="margin-top:8px"><input type="checkbox" id="xAttach" checked> 元の例文を、追加する単語の例文として付ける</label>
+    ${XTR.items.map((c, i) => {
+      const old = xtrExisting(c), dup = !!old || isSrc(c);
+      const sub = c.kind === 'form' ? `<small class="muted">${esc(c.lemma)} の${esc(c.form)}</small>` : c.fromForm ? '<span class="chip">原形</span>' : '';
+      const chk = dup
+        ? (old && !isSrc(c) ? `<input type="checkbox" data-append="${i}">` : '<input type="checkbox" disabled>')
+        : `<input type="checkbox" data-i="${i}" checked>`;
+      return `<label class="xitem ${dup ? 'done' : ''}">${chk}
+        <span><b>${esc(c.term)}</b> ${sub} ${c.pos ? `<span class="chip">${esc(c.pos)}</span>` : ''}
+        ${dup ? `<small class="muted">✓ 登録済み${old && !isSrc(c) ? '（チェックでこの例文を追加）' : ''}</small>` : ''}
+        <div class="muted" style="white-space:pre-wrap">${esc(c.meaning)}</div></span></label>`;
+    }).join('')}
+    <label class="check" style="margin-top:8px"><input type="checkbox" id="xAttach" checked> 元の例文を、追加する単語の例文として付ける</label>
     <div class="btns"><button class="btn primary" onclick="addExtracted()">チェックした単語を追加</button>
-      <button class="btn sm" onclick="$$('#exExtract input[data-i]:not(:disabled)').forEach(x=>x.checked=!x.checked)">チェックを反転</button></div>`
-      : '<div class="muted" style="margin-top:6px">すべて登録済みです</div>'}</div>`;
+      <button class="btn sm" onclick="$$('#exExtract input[data-i]').forEach(x=>x.checked=!x.checked)">チェックを反転</button></div>
+    <p class="hint">原形のカードには、追加したあと活用・変化の表をAIが自動で入れます。</p></div>`;
+}
+function xtrExample(c) {
+  const ex = XTR.examples[c.ex] || XTR.examples.find(e => c.surface && e.text.toLowerCase().includes(c.surface.toLowerCase()));
+  if (!ex) return null;
+  // 原形のカードに付ける例文には「例文中の形 = 変化の種類」をメモ
+  const form = c.kind === 'lemma' && c.form && c.surface ? `${c.surface}：${c.form}` : '';
+  return { text: ex.text, translation: ex.translation || '', ...(form ? { form } : {}) };
 }
 async function addExtracted() {
-  const sel = $$('#exExtract input[data-i]:checked').map(x => XTR.items[+x.dataset.i]);
-  if (!sel.length) return toast('追加する単語にチェックを入れてください');
+  const add = $$('#exExtract input[data-i]:checked').map(x => XTR.items[+x.dataset.i]);
+  const app = $$('#exExtract input[data-append]:checked').map(x => XTR.items[+x.dataset.append]);
+  if (!add.length && !app.length) return toast('追加する単語にチェックを入れてください');
   const attach = $('#xAttach')?.checked;
-  for (const it of sel) {
-    const ex = XTR.examples[it.ex] || XTR.examples.find(e => it.surface && e.text.toLowerCase().includes(it.surface.toLowerCase()));
+  const deck = deckById(XTR.deckId), t = typeOf(deck);
+  const lemmaIds = [];
+  for (const c of add) {
+    const ex = attach ? xtrExample(c) : null;
+    const id = uid();
     await save('cards', {
-      id: uid(), deckId: XTR.deckId, term: it.term, reading: it.reading, pos: it.pos, meaning: it.meaning, usage: '',
-      examples: attach && ex ? [{ text: ex.text, translation: ex.translation || '' }] : [],
-      tags: ['例文から'], note: XTR.srcTerm ? `「${XTR.srcTerm}」の例文から追加` : '', source: null,
+      id, deckId: XTR.deckId, term: c.term, reading: c.reading, pos: c.pos, meaning: c.meaning, usage: '',
+      lemma: c.kind === 'form' ? c.lemma : '', forms: '',
+      examples: ex ? [ex] : [], tags: ['例文から'], note: XTR.srcTerm ? `「${XTR.srcTerm}」の例文から追加` : '', source: null,
       srs: newSrs(), createdAt: Date.now(),
     });
+    if (c.kind === 'lemma') lemmaIds.push(id);
   }
-  toast(`${sel.length}語を単語帳に追加しました`);
+  let appended = 0;
+  for (const c of app) {
+    const old = xtrExisting(c), ex = xtrExample(c);
+    if (old && ex && !(old.examples || []).some(e => e.text === ex.text)) { await save('cards', { ...old, examples: [...(old.examples || []), ex] }); appended++; }
+  }
+  toast([add.length ? `${add.length}語を追加` : '', appended ? `${appended}語に例文を追加` : ''].filter(Boolean).join('・') + 'しました');
   renderExtract();
   if (UI.view !== 'study') render();
+  if (t.forms && lemmaIds.length) fillLemmaCards(lemmaIds, deck);
+}
+// 新しく追加した原形カードに、活用・変化表などをAIで入れる（順番に。空いている欄だけ）
+async function fillLemmaCards(ids, deck) {
+  let fail = 0;
+  for (const [i, id] of ids.entries()) {
+    const c = S.cards.find(x => x.id === id); if (!c) continue;
+    toast(`活用・変化の表を作成中… ${i + 1} / ${ids.length}`, 60000);
+    try {
+      const data = await callAi({ term: c.term, deckType: deck.type, deckName: deck.name, lang: deck.lang, posOptions: typeOf(deck).posOptions });
+      const cur = S.cards.find(x => x.id === id); if (!cur) continue;
+      const upd = { ...cur };
+      for (const k of ['reading', 'pos', 'usage', 'forms']) if (!upd[k] && data[k]) upd[k] = data[k];
+      if (!upd.note || upd.note.startsWith('「')) upd.note = [data.note, upd.note].filter(Boolean).join('\n');
+      await save('cards', upd);
+    } catch (e) { fail++; }
+  }
+  toast(fail ? `活用表の作成に失敗した単語が${fail}件あります（あとで「✨ AIで自動入力」で入れられます）` : '活用・変化の表を入れました', 6000);
+  if (UI.view === 'list') renderListItems();
 }
 async function saveEditor(next) {
   const deck = deckById($('#eDeck').value);
@@ -528,8 +599,10 @@ async function saveEditor(next) {
   const card = {
     id: EDIT.id || uid(), deckId: deck.id, term,
     reading: $('#eReading').value.trim(), pos: $('#ePos').value.trim(),
+    lemma: $('#eLemma').value.trim(), forms: $('#eForms').value.trim(),
     meaning: $('#eMeaning').value.trim(), usage: $('#eUsage').value.trim(),
-    examples: $$('#eExs .ex-row').map(r => ({ text: r.querySelector('.ex-text').value.trim(), translation: r.querySelector('.ex-tr').value.trim() })).filter(e => e.text),
+    examples: $$('#eExs .ex-row').map(r => ({ text: r.querySelector('.ex-text').value.trim(), translation: r.querySelector('.ex-tr').value.trim(),
+      ...(r.dataset.form ? { form: r.dataset.form } : {}) })).filter(e => e.text),
     tags: $('#eTags').value.split(/[\s,、]+/).filter(Boolean),
     note: $('#eNote').value.trim(), source: EDIT.source,
     srs: old?.srs || newSrs(), createdAt: old?.createdAt || Date.now(), updatedAt: Date.now(),
@@ -546,11 +619,23 @@ async function deleteCard(id) {
 }
 
 /* ---------- 単語一覧 ---------- */
+// 活用・変化表：「ラベル: 形」の行を読み取る
+function parseForms(text) {
+  return String(text || '').split('\n').map(l => l.trim().match(/^(.+?)\s*[:：]\s*(.+)$/)).filter(Boolean).map(m => ({ label: m[1].trim(), form: m[2].trim() }));
+}
+function formsTable(forms, hl = -1) {
+  return `<table class="forms-t">${forms.map((f, i) => `<tr class="${i === hl ? 'hl' : ''}"><td class="muted">${esc(f.label)}</td><td><b>${esc(f.form)}</b></td></tr>`).join('')}</table>`;
+}
 function cardDetailHTML(c) {
   const d = deckOf(c), t = typeOf(d);
   const field = (label, val) => val ? `<div class="f"><div class="fl">${label}</div><div class="fv">${esc(val)}</div></div>` : '';
-  let h = field(t.meaning, c.meaning) + field(t.usage, c.usage);
-  if (c.examples?.length) h += `<div class="f"><div class="fl">${t.ex}</div>${c.examples.map(e => `<div class="ex">${esc(e.text)} ${speakBtn(e.text, d)}${e.translation ? `<div class="muted">${esc(e.translation)}</div>` : ''}</div>`).join('')}</div>`;
+  let h = field('原形', c.lemma) + field(t.meaning, c.meaning) + field(t.usage, c.usage);
+  const forms = parseForms(c.forms);
+  if (forms.length) h += `<details class="f forms" onclick="event.stopPropagation()"><summary class="fl">${t.forms || '活用・変化'}（${forms.length}）</summary>${formsTable(forms)}</details>`;
+  else if (c.forms) h += field(t.forms || '活用・変化', c.forms);
+  if (c.examples?.length) h += `<div class="f"><div class="fl">${t.ex}</div>${c.examples.map(e => `<div class="ex">${esc(e.text)} ${speakBtn(e.text, d)}${e.form ? `<small class="muted">（${esc(e.form)}）</small>` : ''}${e.translation ? `<div class="muted">${esc(e.translation)}</div>` : ''}</div>`).join('')}</div>`;
+  const variants = S.cards.filter(x => x.id !== c.id && x.deckId === c.deckId && x.lemma && x.lemma.toLowerCase() === c.term.toLowerCase());
+  if (variants.length) h += `<div class="f"><div class="fl">変化形のカード</div>${variants.map(v => `<span class="chip">${esc(v.term)}</span>`).join(' ')}</div>`;
   h += field('メモ', c.note);
   if (c.tags?.length) h += `<div class="f">${c.tags.map(x => `<span class="chip">#${esc(x)}</span>`).join(' ')}</div>`;
   if (c.source) { const m = S.materials.find(m => m.id === c.source.materialId); if (m) h += `<div class="f"><small class="muted">出典：${esc(m.name)}${c.source.page != null ? ` p.${c.source.page + 1}` : ''}</small></div>`; }
@@ -567,7 +652,7 @@ function renderList() {
   renderListItems();
 }
 function searchText(c) {
-  return [c.term, c.reading, c.pos, c.meaning, c.usage, c.note, ...(c.tags || []).map(t => '#' + t), ...(c.examples || []).map(e => e.text + ' ' + e.translation)].join(' ').toLowerCase();
+  return [c.term, c.reading, c.pos, c.lemma, c.forms, c.meaning, c.usage, c.note, ...(c.tags || []).map(t => '#' + t), ...(c.examples || []).map(e => e.text + ' ' + e.translation)].join(' ').toLowerCase();
 }
 function renderListItems() {
   const q = UI.listQuery.trim().toLowerCase();
@@ -620,8 +705,9 @@ function renderStudy() {
     }).join('')}</div></div>
     <div class="fgroup"><label>出題</label><select id="sMode">
       <option value="due">今日の復習（期限が来た単語）</option><option value="all">全部からランダム</option>
-      <option value="weak">苦手な単語（間違えたことがある）</option><option value="new">まだ学習していない単語</option></select></div>
-    <div class="fgroup"><label>表に出すもの</label><select id="sDir"><option value="fwd">単語 → 意味を思い出す</option><option value="rev">意味 → 単語を思い出す</option></select></div>
+      <option value="weak">苦手な単語（間違えたことがある）</option><option value="new">まだ学習していない単語</option>
+      <option value="conj">活用クイズ（活用・変化の表から出題）</option></select></div>
+    <div class="fgroup"><label>表に出すもの <small class="muted">（活用クイズでは使いません）</small></label><select id="sDir"><option value="fwd">単語 → 意味を思い出す</option><option value="rev">意味 → 単語を思い出す</option></select></div>
     <div class="fgroup"><label>最大問題数</label><input id="sLimit" type="number" value="20" min="1" style="width:120px"></div>
     <button class="btn primary big" onclick="startStudy()">スタート</button>
     <p class="hint">「もう一度」「難しい」「普通」「簡単」の自己評価で、次に出題される日が自動で決まります（間隔反復）。</p></div>`;
@@ -633,6 +719,7 @@ function startStudy() {
   beginSession(decks, $('#sMode').value, $('#sDir').value, Math.max(1, +$('#sLimit').value || 20));
 }
 function beginSession(decks, mode, dir, limit) {
+  if (mode === 'conj') return beginConjQuiz(decks, limit);
   const now = Date.now(); let cs = S.cards.filter(c => decks.includes(c.deckId));
   if (mode === 'due') cs = cs.filter(c => c.srs.due <= now).sort((a, b) => a.srs.due - b.srs.due);
   else if (mode === 'weak') cs = cs.filter(c => c.srs.lapses > 0 || c.srs.ease < 2.3).sort((a, b) => (b.srs.lapses - a.srs.lapses) || (a.srs.ease - b.srs.ease));
@@ -643,8 +730,53 @@ function beginSession(decks, mode, dir, limit) {
   UI.study = { queue: cs.map(c => c.id), pos: 0, flipped: false, dir, counts: { 1:0, 2:0, 3:0, 4:0 }, retried: new Set() };
   go('study');
 }
+/* 活用クイズ：原形カードの「活用・変化」表から1つずつ出題（間隔反復の記録には影響しません） */
+function beginConjQuiz(decks, limit) {
+  const qs = [];
+  for (const c of S.cards.filter(c => decks.includes(c.deckId)))
+    parseForms(c.forms).forEach((f, i) => qs.push({ id: c.id, i, label: f.label, form: f.form }));
+  if (!qs.length) return toast('活用・変化の表が入っている単語がありません（単語を開いて「✨ AIで自動入力」で入れられます）', 6000);
+  UI.study = { conj: true, queue: shuffle(qs).slice(0, limit), pos: 0, flipped: false, counts: { ok: 0, ng: 0 }, retried: new Set() };
+  go('study');
+}
+function renderConj() {
+  const st = UI.study;
+  if (st.pos >= st.queue.length) {
+    V.innerHTML = `<div class="summary panel"><h2>🎉 活用クイズおつかれさまでした</h2>
+      <div class="stats" style="grid-template-columns:1fr 1fr"><div class="stat"><div class="num" style="color:var(--ok)">${st.counts.ok}</div><div class="muted">覚えた</div></div>
+      <div class="stat"><div class="num" style="color:var(--danger)">${st.counts.ng}</div><div class="muted">まだ</div></div></div>
+      <button class="btn primary" onclick="UI.study=null;render()">続けて学習</button> <button class="btn" onclick="UI.study=null;go('home')">ホームへ</button></div>`;
+    return;
+  }
+  const q = st.queue[st.pos], c = S.cards.find(x => x.id === q.id);
+  if (!c) { st.pos++; return renderConj(); }
+  const d = deckOf(c), forms = parseForms(c.forms);
+  const pct = st.pos / st.queue.length * 100;
+  V.innerHTML = `<div class="study-top"><button class="btn" onclick="UI.study=null;render()">終了</button>
+      <div class="progress"><div style="width:${pct}%"></div></div><span class="muted">${st.pos + 1} / ${st.queue.length}</span></div>
+    <div class="flash ${st.flipped ? 'flipped' : ''}" onclick="flip()">
+      <div class="flash-deck">${esc(d?.name)}　活用クイズ</div>
+      <div class="flash-front"><div class="big-term">${esc(c.term)} ${speakBtn(c.term, d)}</div>
+        <div class="muted">${esc((c.meaning || '').split('\n')[0])}</div>
+        <div class="conj-q">${esc(q.label)} は？</div>
+        ${st.flipped ? `<div class="big-term" style="margin-top:10px;color:var(--ok)">${esc(q.form)} ${speakBtn(q.form, d)}</div>` : ''}</div>
+      ${st.flipped ? `<hr><div class="fl">${typeOf(d).forms || '活用・変化'}</div>${formsTable(forms, forms.findIndex(f => f.label === q.label && f.form === q.form))}`
+        : `<div class="muted tap">頭の中で答えてから、クリック / スペースキーで答えを表示</div>`}
+    </div>
+    ${st.flipped ? `<div class="rate" style="grid-template-columns:1fr 1fr"><button class="btn rate-1" onclick="conjRate(false)"><b>まだ</b><small>あとでもう一度</small></button>
+      <button class="btn rate-3" onclick="conjRate(true)"><b>覚えた</b><small>次へ</small></button></div>
+      <div class="keys muted">キーボード：1 まだ ／ 2 覚えた</div>` : ''}`;
+}
+function conjRate(ok) {
+  const st = UI.study; if (!st?.conj || !st.flipped) return;
+  const q = st.queue[st.pos], key = q.id + '|' + q.i;
+  st.counts[ok ? 'ok' : 'ng']++;
+  if (!ok && !st.retried.has(key)) { st.queue.push(q); st.retried.add(key); }
+  st.pos++; st.flipped = false; renderConj();
+}
 function renderSession() {
   const st = UI.study;
+  if (st.conj) return renderConj();
   if (st.pos >= st.queue.length) {
     const n = st.counts, total = n[1] + n[2] + n[3] + n[4];
     V.innerHTML = `<div class="summary panel"><h2>🎉 おつかれさまでした</h2><div class="muted">${total} 回回答しました</div>
@@ -676,7 +808,8 @@ function renderSession() {
 }
 function flip() { if (UI.study && !UI.study.flipped) { UI.study.flipped = true; renderSession(); } }
 async function rate(r) {
-  const st = UI.study; const id = st.queue[st.pos]; const c = S.cards.find(x => x.id === id);
+  const st = UI.study; if (st.conj) return;
+  const id = st.queue[st.pos]; const c = S.cards.find(x => x.id === id);
   if (!c || !st.flipped) return;
   st.counts[r]++;
   await save('cards', { ...c, srs: schedule(c.srs, r) });
@@ -687,6 +820,7 @@ document.addEventListener('keydown', e => {
   if (UI.view !== 'study' || !UI.study || !$('#modal').classList.contains('hidden')) return;
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
   if (e.code === 'Space' || e.key === 'Enter') { e.preventDefault(); flip(); }
+  else if (UI.study.conj) { if (UI.study.flipped && (e.key === '1' || e.key === '2')) conjRate(e.key === '2'); }
   else if (UI.study.flipped && ['1', '2', '3', '4'].includes(e.key)) rate(+e.key);
 });
 

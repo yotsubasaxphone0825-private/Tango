@@ -20,9 +20,22 @@ const SCHEMA = {
     usage: { type: "STRING", description: "用法・ニュアンス・試験のポイントなど" },
     note: { type: "STRING", description: "補足メモ（似た語との違い、関連用語など）。なければ空文字" },
     tags: { type: "ARRAY", items: { type: "STRING" }, description: "短いタグ 0〜3個" },
+    lemma: { type: "STRING", description: "単語が活用・変化した形なら原形。原形そのものなら空文字" },
+    forms: { type: "STRING", description: "原形の場合の活用・変化表。1行に「ラベル: 形」。変化しない語・変化形の場合は空文字" },
   },
-  required: ["reading", "pos", "meaning", "usage", "note", "tags"],
+  required: ["reading", "pos", "meaning", "usage", "note", "tags", "lemma", "forms"],
 };
+
+// 活用・変化表の書き方（語学の単語帳）
+const FORMS_GUIDE = `- forms: 単語が原形（辞書形）のときだけ、活用・変化を1行に1つ「ラベル: 形」で書く。変化しない語は空文字
+  - 動詞（スペイン語など）: 直説法現在・点過去・線過去・未来・過去未来（条件法）・接続法現在 をそれぞれ6人称（yo / tú / él / nosotros / vosotros / ellos）、命令法 tú、過去分詞、現在分詞
+    例「点過去 yo: fui」「未来 nosotros: iremos」「過去分詞: ido」
+  - 英語の動詞: 三単現・過去形・過去分詞・-ing形
+  - 名詞: 性・単数・複数
+  - 形容詞: 男性単数・女性単数・男性複数・女性複数（英語なら比較級・最上級）
+  - 冠詞・指示詞・所有詞・代名詞: 性・数・格による形（例「女性単数: la」「男性複数: los」）
+- lemma: 入力された単語が活用・変化した形（例：fui, iremos, la）なら原形（ir, el）。原形そのものなら空文字
+  - 変化した形の場合、meaning は「ir（行く）の点過去・1人称単数」のように、原形と変化の種類を最初に書き、そのあとに意味を書く。forms は空文字`;
 
 const SYSTEM = `あなたは日本語話者の単語学習を手伝う辞書編集者です。
 指定された単語について、単語帳のカードに載せる項目をJSONで返します。
@@ -47,7 +60,8 @@ function buildPrompt(b: Record<string, unknown>) {
 - meaning: 日本語の意味。意味が複数あれば「1. 〜 2. 〜」の形で主なものを最大3つ
 - usage: 用法・ニュアンス・よく一緒に使う語・不規則活用や複数形など、覚えるべき文法情報
 - note: 似た語・紛らわしい語との違いや覚え方（なければ空）
-- tags: 例「日常会話」「旅行」「動詞活用」など`;
+- tags: 例「日常会話」「旅行」「動詞活用」など
+${FORMS_GUIDE}`;
   } else if (deckType === "it") {
     guide = `単語帳「${deckName}」のIT用語です。学習者はITパスポート・基本情報技術者試験の受験者です。
 - reading: 読み方。略語なら正式名称（英語）と日本語訳
@@ -55,7 +69,8 @@ function buildPrompt(b: Record<string, unknown>) {
 - meaning: 試験で問われる観点での説明（2〜4文）
 - usage: 試験でのポイント・よく比較される用語との違い・覚え方
 - note: 関連用語（「関連：〜、〜」の形）
-- tags: 例「ITパスポート」「基本情報」「セキュリティ」など`;
+- tags: 例「ITパスポート」「基本情報」「セキュリティ」など
+- lemma, forms: 空文字`;
   } else {
     guide = `単語帳「${deckName}」の見出し語です。
 - reading: 読み・補足
@@ -63,7 +78,8 @@ function buildPrompt(b: Record<string, unknown>) {
 - meaning: 日本語の意味
 - usage: 用法やメモ
 - note: 補足（なければ空）
-- tags: 短いタグ`;
+- tags: 短いタグ
+- lemma, forms: 空文字`;
   }
   return [
     `単語: ${term}`,
@@ -84,14 +100,16 @@ const SCHEMA_EXTRACT = {
       items: {
         type: "OBJECT",
         properties: {
-          term: { type: "STRING", description: "辞書に載っている形（見出し語）" },
+          term: { type: "STRING", description: "辞書に載っている形（原形・見出し語）" },
           surface: { type: "STRING", description: "例文中に実際に出てきた形" },
-          reading: { type: "STRING", description: "発音・読み" },
+          form: { type: "STRING", description: "surface が term の変化形なら、その変化の種類（例：点過去・1人称単数）。同じなら空文字" },
+          reading: { type: "STRING", description: "surface の発音・読み" },
           pos: { type: "STRING", description: "品詞または分野" },
           meaning: { type: "STRING", description: "この例文での意味（日本語で簡潔に）" },
+          lemmaMeaning: { type: "STRING", description: "原形（term）の基本的な意味（日本語で簡潔に）" },
           ex: { type: "INTEGER", description: "その語が出てきた例文の番号（0始まり）" },
         },
-        required: ["term", "surface", "reading", "pos", "meaning", "ex"],
+        required: ["term", "surface", "form", "reading", "pos", "meaning", "lemmaMeaning", "ex"],
       },
     },
   },
@@ -120,19 +138,22 @@ function buildExtractPrompt(b: Record<string, unknown>) {
 - 一般的な日本語の言葉は除外`
     : deckType === "lang"
     ? `単語帳「${deckName}」（言語コード: ${lang || "不明"}）の学習者が作った例文です。単語・熟語・決まった言い回しを抜き出してください。
-- term: 辞書に載っている形（動詞は不定詞・原形、名詞は単数形、形容詞は基本形）。熟語や言い回しは「tener que」「a veces」「look forward to」のようにまとまりで1項目
+- term: 辞書に載っている形（動詞は不定詞・原形、名詞は単数形、形容詞は男性単数形、冠詞は el / un など）。熟語や言い回しは「tener que」「a veces」「look forward to」のようにまとまりで1項目
 - surface: 例文中に実際に出てきた形（活用形のまま）
-- reading: カタカナ読み
+- form: surface が term の変化形なら変化の種類（例：「点過去・1人称単数」「未来・1人称複数」「女性複数」「過去分詞」）。同じ形なら空文字
+- reading: surface のカタカナ読み
 - pos: 品詞（名詞なら性も）
 - meaning: この例文での意味を日本語で簡潔に
-- 冠詞・人称代名詞・ごく基本的な前置詞や接続詞（例：スペイン語の el, la, de, y, que／英語の the, a, of, and）・固有名詞・数字は除外（熟語の一部なら可）`
+- lemmaMeaning: 原形の基本的な意味
+- 冠詞・前置詞・接続詞・代名詞・所有詞などの基本的な語も、学習者は勉強中なので必ず含める
+- 固有名詞と数字だけは除外`
     : `単語帳「${deckName}」の例文です。覚える価値のある語句を抜き出してください。
 - term: 見出し語の形
 - meaning: この例文での意味を日本語で簡潔に`;
 
   return [
     guide,
-    "- 同じ語は1回だけ。最大20個。例文に出てくる順に並べる",
+    "- 同じ surface は1回だけ。最大30個。例文に出てくる順に並べる",
     posOptions.length ? `pos は次の候補から選んでください（合わなければ自由に）：${posOptions.join(" / ")}` : "",
     `<例文>\n${examples.map((e, i) => `${i}: ${e}`).join("\n")}\n</例文>`,
   ].filter(Boolean).join("\n\n");
@@ -212,11 +233,16 @@ Deno.serve(async (req) => {
     const items = (Array.isArray(out.items) ? out.items : []).map((it: Record<string, unknown>) => ({
       term: str(it?.term, 120),
       surface: str(it?.surface, 120),
+      form: str(it?.form, 120),
       reading: str(it?.reading, 200),
       pos: str(it?.pos, 60),
       meaning: str(it?.meaning, 500),
+      lemmaMeaning: str(it?.lemmaMeaning, 500),
       ex: Number.isInteger(it?.ex) && (it.ex as number) >= 0 && (it.ex as number) < n ? it.ex : -1,
-    })).filter((it) => it.term && !seen.has(it.term.toLowerCase()) && seen.add(it.term.toLowerCase())).slice(0, 25);
+    })).filter((it) => {
+      const k = (it.surface || it.term).toLowerCase();
+      return it.term && !seen.has(k) && seen.add(k);
+    }).slice(0, 30);
     return json({ items });
   }
 
@@ -227,5 +253,7 @@ Deno.serve(async (req) => {
     usage: str(out.usage),
     note: str(out.note),
     tags: Array.isArray(out.tags) ? out.tags.map((t) => str(t, 30).replace(/\s+/g, "")).filter(Boolean).slice(0, 3) : [],
+    lemma: str(out.lemma, 120),
+    forms: str(out.forms, 4000),
   });
 });
