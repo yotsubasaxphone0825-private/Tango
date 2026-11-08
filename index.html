@@ -409,6 +409,7 @@ function openEditor(cardId, o = {}) {
       <button class="btn sm hidden" id="aiMore" onclick="aiFill({ai:true})">🤖 AIで日本語の意味・用法も</button>
       <small class="muted">例文以外の空いている欄を、辞書（スペイン語・英語）かAIで埋めます</small></div>
     <div id="aiErr" class="warn hidden" style="white-space:pre-wrap;margin:-6px 0 12px;user-select:text"></div>
+    <div id="aiInfo" class="hint hidden" style="margin:-8px 0 12px;user-select:text"></div>
     <div class="grid2">
       <div class="fgroup"><label data-l="pos"></label><input id="ePos" list="posList" value="${esc(v.pos)}" placeholder="選択または自由入力"><datalist id="posList"></datalist></div>
       <div class="fgroup lang-only"><label data-l="lemma"></label><input id="eLemma" value="${esc(v.lemma || '')}" placeholder="例：fui → ir"></div>
@@ -488,7 +489,11 @@ async function dictLookup(l, word) {
 }
 const firstSeg = g => String(g || '').split(/\s*[;/]\s*/)[0];
 // スペイン語の辞書は意味が英語なので、日本語の訳語だけAIに頼む（まとめて1回・一度訳したものは覚えておく）
-let TR = null, TR_ERR = null;
+let TR = null, TR_ERR = null, TR_TIME = null;
+// かかった時間を「⏱ 辞書 0.2秒 ／ AI 2.1秒（モデル名…）」の形で
+const sec = ms => (ms / 1000).toFixed(1) + '秒';
+const fmtTiming = t => t ? `AI ${sec(t.total ?? t.ai ?? 0)}（${(t.tries || []).join('、')}）` : '';
+function showAiInfo(text) { const el = $('#aiInfo'); if (el) { el.textContent = text; el.classList.toggle('hidden', !text); } }
 function trCache() { if (!TR) { try { TR = JSON.parse(localStorage.getItem('tango.trCache') || '{}'); } catch (e) { TR = {}; } } return TR; }
 function trSave() {
   try { const ks = Object.keys(TR); if (ks.length > 3000) ks.slice(0, ks.length - 3000).forEach(k => delete TR[k]); localStorage.setItem('tango.trCache', JSON.stringify(TR)); } catch (e) {}
@@ -497,13 +502,14 @@ function trSave() {
 async function translateGlosses(lang, pairs) {
   const c = trCache(), key = p => p.w.toLowerCase() + '|' + p.g;
   const need = [...new Map(pairs.filter(p => p.g && !c[key(p)]).map(p => [key(p), p])).values()];
-  TR_ERR = null;
+  TR_ERR = null; TR_TIME = null;
   if (need.length) {
     if (!Sync.sb || !Sync.user) TR_ERR = new Error('日本語に訳すには「設定」でSupabaseにログインしてください');
     else {
       const parts = []; for (let i = 0; i < need.length; i += 60) parts.push(need.slice(i, i + 60));
       await Promise.all(parts.map(async part => {
-        try { const d = await callAi({ mode: 'translate', lang, items: part.map(p => ({ w: p.w, g: p.g })) }); part.forEach((p, j) => { if (d.ja?.[j]) c[key(p)] = d.ja[j]; }); }
+        const ts = Date.now();
+        try { const d = await callAi({ mode: 'translate', lang, items: part.map(p => ({ w: p.w, g: p.g })) }); TR_TIME = { ...(d.timing || {}), client: Date.now() - ts }; part.forEach((p, j) => { if (d.ja?.[j]) c[key(p)] = d.ja[j]; }); }
         catch (e) { TR_ERR = e; }
       }));
       trSave();
@@ -542,20 +548,25 @@ async function aiFill(opts = {}) {
   const deck = deckById($('#eDeck').value), t = typeOf(deck);
   $('#aiErr')?.classList.add('hidden');
   const l = dictLang(deck);
+  showAiInfo('');
   if (!opts.ai && l) { // まず辞書（一瞬・無料・活用表が正確）
+    const tDict = Date.now();
     const dc = await dictCard(l, term);
+    const dictMs = Date.now() - tDict;
     if (dc && $('#eTerm')?.value.trim() === term) {
       let n = 0; const set = (id, val) => { const el = $('#' + id); if (el && val && !el.value.trim()) { el.value = val; n++; } };
       set('eReading', dc.reading); set('ePos', dc.pos); set('eNote', dc.note); set('eEn', dc.en);
       if (t.forms) { set('eLemma', dc.lemma); if (!dc.lemma) set('eForms', dc.forms); }
       if (dc.tg && !$('#eMeaning').value.trim()) { // 英語の意味を日本語の訳語に（AIは訳すところだけ）
         const btn = $('#aiBtn'); btn.disabled = true; btn.textContent = '✨ 日本語に訳しています…';
+        const tTr = Date.now();
         const [ja] = await translateGlosses(l, [{ w: dc.tw, g: dc.tg }]);
         const b = $('#aiBtn'); if (b) { b.disabled = false; b.textContent = '✨ 自動入力'; }
+        showAiInfo(`⏱ 辞書 ${sec(dictMs)} ／ 翻訳 ${sec(Date.now() - tTr)}${TR_TIME ? `（うち ${fmtTiming(TR_TIME)}）` : '（覚えていた訳を使用）'}`);
         if ($('#eTerm')?.value.trim() !== term) return;
         set('eMeaning', fillTmpl(dc, ja));
         if (!ja && TR_ERR) { const el = $('#aiErr'); if (el) { el.textContent = '⚠ 日本語に訳せなかったので英語のままです：' + TR_ERR.message; el.classList.remove('hidden'); } }
-      } else set('eMeaning', dc.meaning);
+      } else { set('eMeaning', dc.meaning); showAiInfo(`⏱ 辞書 ${sec(dictMs)}`); }
       $('#aiMore')?.classList.remove('hidden');
       toast(n ? `辞書から入力しました。用法やニュアンスもほしいときは「AIで日本語の意味・用法も」` : '空いている欄がないので、何も変更しませんでした', 5000);
       return;
@@ -575,14 +586,17 @@ async function aiFill(opts = {}) {
   };
   const base = { term, deckType: deck.type, deckName: deck.name, lang: deck.lang, posOptions: t.posOptions, contexts: (EDIT?.contexts || []).map(c => c.text).slice(0, 5) };
   // 語学：意味など と 活用表 を同時に頼み、届いたものから順に埋める
+  const times = [];
   const jobs = [
     callAi(t.forms ? { ...base, part: 'basic' } : base).then(data => {
+      times.push('意味など ' + fmtTiming(data.timing));
       if (!alive()) return;
       set('eReading', data.reading); set('ePos', data.pos); set('eMeaning', data.meaning); set('eUsage', data.usage); set('eNote', data.note);
       if (t.forms) set('eLemma', data.lemma);
     }),
   ];
   if (t.forms && !$('#eForms').value.trim()) jobs.push(callAi({ mode: 'forms', term, lang: deck.lang, deckType: deck.type, deckName: deck.name }).then(data => {
+    times.push('活用表 ' + fmtTiming(data.timing));
     if (!alive()) return;
     if (!$('#eLemma').value.trim()) set('eLemma', data.lemma);
     if (!$('#eLemma').value.trim()) set('eForms', data.forms); // 変化形のカードには活用表を入れない
@@ -590,6 +604,7 @@ async function aiFill(opts = {}) {
   const results = await Promise.allSettled(jobs);
   clearInterval(timer);
   const b = $('#aiBtn'); if (b) { b.disabled = false; b.textContent = '✨ 自動入力'; }
+  if (alive()) showAiInfo(`⏱ 全体 ${sec(Date.now() - t0)}${times.length ? '　' + times.join(' ／ ') : ''}`);
   const err = results.find(r => r.status === 'rejected')?.reason;
   if (err && alive()) {
     const el = $('#aiErr'); if (el) { el.textContent = '⚠ ' + (filled ? '一部だけ入力できました：' : '自動入力に失敗：') + err.message; el.classList.remove('hidden'); }

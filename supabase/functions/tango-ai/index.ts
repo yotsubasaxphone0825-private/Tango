@@ -191,6 +191,7 @@ function buildExtractPrompt(b: Record<string, unknown>) {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
+  const tReq = Date.now();
 
   // ログインしているユーザーか確認（Supabase Auth に問い合わせ）
   const auth = req.headers.get("Authorization") ?? "";
@@ -215,12 +216,17 @@ Deno.serve(async (req) => {
   const prompt = extract ? buildExtractPrompt(body) : translate ? buildTranslatePrompt(body) : formsOnly ? buildFormsPrompt(body) : buildPrompt(body);
   const system = extract ? SYSTEM_EXTRACT : translate ? SYSTEM_TRANSLATE : SYSTEM;
   const schema = extract ? SCHEMA_EXTRACT : translate ? SCHEMA_TRANSLATE : formsOnly ? SCHEMA_FORMS : body.part === "basic" ? SCHEMA_BASIC : SCHEMA;
+  const t0 = Date.now(), tries: string[] = [];
   // 速さ優先：考える量（thinking）を最小に。モデルが対応していなければ順に緩める
+  // 一定時間（15秒）返事がなければ待つのをやめて、次のモデルに切り替える
   const callModel = async (m: string) => {
     let r!: Response;
     for (const level of [...new Set([Deno.env.get("GEMINI_THINKING") || "minimal", "low", ""])]) {
+      const ts = Date.now();
+      try {
       r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, {
         method: "POST",
+        signal: AbortSignal.timeout(15000),
         headers: { "Content-Type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: system }] },
@@ -231,27 +237,34 @@ Deno.serve(async (req) => {
           },
         }),
       });
+      } catch (_e) { // 時間切れ・通信エラー → 504 扱いにして次のモデルへ
+        tries.push(`${m}:timeout(${((Date.now() - ts) / 1000).toFixed(1)}s)`);
+        return new Response(JSON.stringify({ error: { message: "timeout" } }), { status: 504 });
+      }
+      tries.push(`${m}:${r.status}(${((Date.now() - ts) / 1000).toFixed(1)}s)`);
       if (r.status !== 400 || !/thinking/i.test(await r.clone().text())) break; // thinking 以外の 400 はそのまま
     }
     return r;
   };
-  // 混雑（503など）や回数上限（429）のときは、少し待ってやり直し → 別の無料モデルに切り替え
+  // 混雑（503など）や回数上限（429）・時間切れのときは、別の無料モデルに切り替え
+  // 訳語にするだけ（translate）は簡単なので、最初から速い軽量モデルを使う
   const fallback = Deno.env.get("GEMINI_FALLBACK_MODEL") || "gemini-3.5-flash-lite";
-  const plan = [model, model, ...(fallback !== model ? [fallback] : [])];
+  const plan = translate ? [fallback, model] : [model, model, ...(fallback !== model ? [fallback] : [])];
   let res!: Response;
   for (let i = 0; i < plan.length; i++) {
-    if (i === 1) await new Promise((r) => setTimeout(r, 1500));
+    if (i > 0 && plan[i] === plan[i - 1]) await new Promise((r) => setTimeout(r, 1500)); // 同じモデルでやり直すときだけ少し待つ
     res = await callModel(plan[i]);
     if (res.ok || ![429, 500, 503, 504].includes(res.status)) break;
-    if (res.status === 429 && i === 0) i = 1; // 回数上限なら同じモデルで待たずに切り替え
+    if ((res.status === 429 || res.status === 504) && plan[i + 1] === plan[i]) i++; // 回数上限・時間切れなら同じモデルは飛ばす
   }
+  const timing = { total: Date.now() - tReq, ai: Date.now() - t0, tries };
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 400);
     const msg = res.status === 429 ? "無料枠の上限に達しました。少し待ってから試してください"
       : res.status === 503 || res.status === 500 || res.status === 504 ? "Googleのサーバーが混み合っています。少し待ってからもう一度試してください"
       : res.status === 400 || res.status === 403 ? "Gemini APIキーまたはモデル名を確認してください"
       : `Gemini API エラー（${res.status}）`;
-    return json({ error: msg, detail }, res.status === 429 ? 429 : 502);
+    return json({ error: msg, detail, timing }, res.status === 429 ? 429 : 502);
   }
   const data = await res.json();
   const text: string = (data?.candidates?.[0]?.content?.parts ?? []).map((p: { text?: string }) => p.text ?? "").join("");
@@ -259,10 +272,10 @@ Deno.serve(async (req) => {
   try { out = JSON.parse(text.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g, "")); }
   catch { return json({ error: "AIの返答を読み取れませんでした。もう一度試してください" }, 502); }
 
-  if (formsOnly) return json({ lemma: str(out.lemma, 120), forms: str(out.forms, 4000) });
+  if (formsOnly) return json({ lemma: str(out.lemma, 120), forms: str(out.forms, 4000), timing });
   if (translate) {
     const n = Math.min((body.items as unknown[]).length, 80), ja = Array.isArray(out.ja) ? out.ja : [];
-    return json({ ja: Array.from({ length: n }, (_, i) => str(ja[i], 120)) });
+    return json({ ja: Array.from({ length: n }, (_, i) => str(ja[i], 120)), timing });
   }
 
   if (extract) {
@@ -281,7 +294,7 @@ Deno.serve(async (req) => {
       const k = (it.surface || it.term).toLowerCase();
       return it.term && !seen.has(k) && seen.add(k);
     }).slice(0, 40);
-    return json({ items });
+    return json({ items, timing });
   }
 
   return json({
@@ -293,5 +306,6 @@ Deno.serve(async (req) => {
     tags: Array.isArray(out.tags) ? out.tags.map((t) => str(t, 30).replace(/\s+/g, "")).filter(Boolean).slice(0, 3) : [],
     lemma: str(out.lemma, 120),
     forms: str(out.forms, 4000),
+    timing,
   });
 });
