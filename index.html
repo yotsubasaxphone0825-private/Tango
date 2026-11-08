@@ -8,6 +8,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="単語帳">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📘</text></svg>">
 <style>
 :root{
@@ -1568,7 +1571,7 @@ function searchSelection() {
 
 /* ---------- 設定・バックアップ ---------- */
 function renderSettings() {
-  V.innerHTML = syncPanelHTML() + `<div class="panel"><h2>バックアップ</h2>
+  V.innerHTML = installPanelHTML() + syncPanelHTML() + `<div class="panel"><h2>バックアップ</h2>
     <p class="muted">データはこのパソコンのブラウザ内に保存されています。ブラウザの「閲覧データの削除」で消えることがあるので、ときどきバックアップしてください。別のパソコンやブラウザへの引っ越しにも使えます。</p>
     <label class="check" style="margin-bottom:10px"><input type="checkbox" id="xMat" checked> 資料（PDFから取り出した本文）も含める</label>
     <button class="btn primary" onclick="exportData()">⬇ バックアップを保存（JSON）</button>
@@ -1823,6 +1826,25 @@ async function sbLogout() {
 
 try { UI.autoSpeak = !!localStorage.getItem('autoSpeak'); } catch (e) {}
 init();
+// アプリとして使えるようにする（オフラインでも開ける・インストールできる）
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); UI.installEvt = e; if (UI.view === 'settings') renderSettings(); });
+window.addEventListener('appinstalled', () => { UI.installEvt = null; toast('アプリとしてインストールしました'); });
+async function installApp() {
+  if (!UI.installEvt) return;
+  UI.installEvt.prompt(); await UI.installEvt.userChoice; UI.installEvt = null; renderSettings();
+}
+function installPanelHTML() {
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  return `<div class="panel"><h2>📱 アプリとして使う</h2>
+    ${standalone ? '<p style="margin:0">✓ いまアプリとして開いています。</p>'
+    : location.protocol !== 'https:' ? `<p class="muted" style="margin:0">ファイルとして開いているときはインストールできません。公開URL（https://yotsubasaxphone0825-private.github.io/Tango/）で開いてください。</p>`
+    : UI.installEvt ? '<p class="muted" style="margin-top:0">ホーム画面やデスクトップにアイコンが追加され、アドレス欄のない画面で開けます。</p><button class="btn primary" onclick="installApp()">アプリとしてインストール</button>'
+    : ios ? '<p class="muted" style="margin:0">Safari の共有ボタン（□に↑）→「ホーム画面に追加」で、アプリのように使えます。</p>'
+    : '<p class="muted" style="margin:0">Chrome / Edge のアドレス欄の右にあるインストールボタン（モニターに↓のマーク）、またはメニュー（︙）→「アプリをインストール」「ホーム画面に追加」から追加できます。</p>'}
+    <p class="hint">一度開いたページや辞書は端末に保存されるので、電波が弱くても開けます（同期とAIはネットが必要です）。</p></div>`;
+}
 </script>
 </body>
 </html>
