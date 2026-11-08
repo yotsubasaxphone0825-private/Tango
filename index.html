@@ -549,6 +549,8 @@ async function aiFill(opts = {}) {
   $('#aiErr')?.classList.add('hidden');
   const l = dictLang(deck);
   showAiInfo('');
+  if (!opts.ai && l && location.protocol === 'file:') // ファイルとして直接開くと、ブラウザの制限で辞書を読めない
+    toast('ファイルとして開いているので辞書が使えず、AIで作ります。公開URL（github.io）で開くと辞書で一瞬で入ります', 7000);
   if (!opts.ai && l) { // まず辞書（一瞬・無料・活用表が正確）
     const tDict = Date.now();
     const dc = await dictCard(l, term);
