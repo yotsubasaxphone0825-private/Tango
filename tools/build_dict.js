@@ -1,5 +1,5 @@
 // 辞書データを、アプリで使う小さなファイルに加工するスクリプト
-//   node tools/build_dict.js es <kaikki.org-dictionary-Spanish.jsonl.gz> dict/es
+//   node tools/build_dict.js es <kaikki.org-dictionary-Spanish.jsonl.gz> dict/es <EJDictのsrcフォルダ（英語の意味を日本語にする）>
 //   node tools/build_dict.js en <EJDictのsrcフォルダ> dict/en
 // 出力：dict/<lang>/<先頭2文字>.json（{ 単語: [項目, ...] }）
 // 項目：{ p: 品詞, i: 発音, g: 意味（短く）, f: 活用・変化表, of: [[原形, 変化の種類], ...] }
@@ -61,6 +61,28 @@ const shortGloss = g => {
 };
 const isLetterName = g => /^The name of the Latin[- ]script letter/i.test(g);
 
+// 英語の意味 → 日本語（英和辞書 EJDict で引き直す）。4つ目の引数に EJDict の src フォルダを渡したときだけ
+const EJ = new Map();
+function loadEj(dir) {
+  for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.txt')))
+    for (const line of fs.readFileSync(path.join(dir, f), 'utf8').split(/\r?\n/)) {
+      const [words, mean] = line.split('\t'); if (!words || !mean) continue;
+      const ja = mean.split(' / ')[0].replace(/《[^》]*》|〈[^〉]*〉|\([^)]*\)|（[^）]*）|\[[^\]]*\]|{[^}]*}/g, '').replace(/[『』]/g, '')
+        .split(/[,;，、；]/).map(s => s.trim()).filter(s => s && !/[A-Za-z]{3,}/.test(s)).slice(0, 2).join('、');
+      if (ja) for (const w of words.split(',').map(s => s.trim().toLowerCase())) if (w && !EJ.has(w)) EJ.set(w, ja);
+    }
+}
+function toJa(glossStr) {
+  const out = [];
+  for (let seg of glossStr.split('; ')) {
+    seg = seg.toLowerCase().replace(/[.!]$/, '').trim();
+    const cands = [seg, seg.replace(/^(to|a|an|the) /, ''), seg.replace(/^to be /, '')];
+    const ja = cands.map(c => EJ.get(c)).find(Boolean);
+    if (ja && !out.includes(ja)) out.push(ja);
+  }
+  return out.slice(0, 3).join(' / ');
+}
+
 async function buildEs() {
   const rl = readline.createInterface({ input: fs.createReadStream(src).pipe(zlib.createGunzip()), crlfDelay: Infinity });
   let n = 0;
@@ -114,7 +136,10 @@ async function buildEs() {
     const item = {};
     if (pos) item.p = pos + gender;
     if (ipa) item.i = ipa;
-    if (glosses.length) item.g = [...new Set(glosses.slice(0, 3).join('; ').split('; '))].join('; ');
+    if (glosses.length) {
+      item.g = [...new Set(glosses.slice(0, 3).join('; ').split('; '))].join('; ');
+      if (EJ.size) { const j = toJa([...new Set(glosses.join('; ').split('; '))].join('; ')); if (j) item.j = j; }
+    }
     if (forms) item.f = forms;
     if (of.length) item.of = of.slice(0, 4);
     add(e.word, item);
@@ -140,7 +165,7 @@ function buildEn() {
 }
 
 (async () => {
-  if (lang === 'es') await buildEs(); else if (lang === 'en') buildEn(); else throw new Error('lang は es か en');
+  if (lang === 'es') { if (process.argv[5]) loadEj(process.argv[5]); await buildEs(); } else if (lang === 'en') buildEn(); else throw new Error('lang は es か en');
   // 意味のある項目を先に。さらに機能語（前置詞・冠詞など）→ 動詞 → 形容詞 → 名詞 の順に並べる（「a」が名詞より前置詞になるように）
   const PRI = ['前置詞', '冠詞', '代名詞', '接続詞', '限定詞', '縮約形', '動詞', '形容詞', '副詞', '数詞', '間投詞', '熟語・フレーズ', '名詞'];
   const pri = x => { const i = PRI.findIndex(p => (x.p || '').startsWith(p)); return i < 0 ? PRI.length : i; };

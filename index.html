@@ -220,7 +220,7 @@ const V = $('#view');
 /* ---------- 単語帳の種類ごとの入力欄 ---------- */
 const TYPES = {
   lang: { label:'語学', term:'単語・フレーズ', reading:'発音・読み', pos:'品詞', meaning:'意味', usage:'用法・ニュアンス', ex:'例文', exTr:'訳',
-          lemma:'原形（変化した形のとき）', forms:'活用・変化',
+          lemma:'原形（変化した形のとき）', forms:'活用・変化', en:'英語の意味',
           posOptions:['名詞','動詞','形容詞','副詞','前置詞','接続詞','代名詞','冠詞','間投詞','熟語・フレーズ','その他'] },
   it:   { label:'IT用語', term:'用語', reading:'読み・正式名称', pos:'分野', meaning:'意味・説明', usage:'ポイント・覚え方', ex:'出題例・使用例', exTr:'補足',
           posOptions:['ストラテジ','マネジメント','テクノロジ','ネットワーク','セキュリティ','データベース','アルゴリズム・プログラミング','ハードウェア','ソフトウェア','システム開発','法務','経営・会計','その他'] },
@@ -397,7 +397,7 @@ function openEditor(cardId, o = {}) {
   if (!S.decks.length) { toast('先に単語帳を作成してください'); return openDeckEditor(); }
   const c = cardId ? S.cards.find(x => x.id === cardId) : null;
   const deckId = c?.deckId || (deckById(o.deckId) ? o.deckId : null) || (deckById(UI.listDeck) ? UI.listDeck : S.decks[0].id);
-  const v = c || { term: o.term || '', reading:'', pos:'', lemma:'', forms:'', meaning:'', usage:'', examples:[], note:'' };
+  const v = c || { term: o.term || '', reading:'', pos:'', lemma:'', forms:'', meaning:'', en:'', usage:'', examples:[], note:'' };
   EDIT = { id: c?.id || null, contexts: o.contexts || [], source: c?.source || o.source || null };
   modal(`<h3>${c ? '単語を編集' : '単語を追加'}</h3>
     <div class="fgroup"><label>単語帳</label><select id="eDeck" onchange="editorLabels();dupCheck()">${S.decks.map(d => `<option value="${d.id}" ${d.id === deckId ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></div>
@@ -417,6 +417,7 @@ function openEditor(cardId, o = {}) {
       ${EDIT.contexts.map((x, i) => `<div class="ctx"><div class="ctx-text">${x.page != null ? `<small class="muted">p.${x.page + 1}</small> ` : ''}${esc(x.text)}</div>
         <div class="ctx-btns"><button class="btn sm" onclick="ctxTo(${i},'eMeaning')">→ <span data-l="meaning"></span></button><button class="btn sm" onclick="ctxTo(${i},'eUsage')">→ <span data-l="usage"></span></button><button class="btn sm" onclick="ctxTo(${i},'ex')">→ <span data-l="ex"></span></button></div></div>`).join('')}</div>` : ''}
     <div class="fgroup"><label data-l="meaning"></label><textarea id="eMeaning" rows="3">${esc(v.meaning)}</textarea></div>
+    <div class="fgroup lang-only"><label><span data-l="en"></span> <small class="muted">辞書（Wiktionary）の英語の説明</small></label><input id="eEn" value="${esc(v.en || '')}"></div>
     <div class="fgroup"><label data-l="usage"></label><textarea id="eUsage" rows="2">${esc(v.usage)}</textarea></div>
     <div class="fgroup lang-only"><label><span data-l="forms"></span> <small class="muted">1行に「ラベル: 形」（例：点過去 yo: fui）。活用クイズに使います</small></label>
       <textarea id="eForms" rows="4" placeholder="直説法現在 yo: voy&#10;点過去 yo: fui&#10;未来 nosotros: iremos">${esc(v.forms || '')}</textarea></div>
@@ -486,25 +487,54 @@ async function dictLookup(l, word) {
   return (await file)[w] || null;
 }
 const firstSeg = g => String(g || '').split(/\s*[;/]\s*/)[0];
+// スペイン語の辞書は意味が英語なので、日本語の訳語だけAIに頼む（まとめて1回・一度訳したものは覚えておく）
+let TR = null, TR_ERR = null;
+function trCache() { if (!TR) { try { TR = JSON.parse(localStorage.getItem('tango.trCache') || '{}'); } catch (e) { TR = {}; } } return TR; }
+function trSave() {
+  try { const ks = Object.keys(TR); if (ks.length > 3000) ks.slice(0, ks.length - 3000).forEach(k => delete TR[k]); localStorage.setItem('tango.trCache', JSON.stringify(TR)); } catch (e) {}
+}
+// pairs: [{ w: 単語, g: 英語の意味 }] → 日本語の訳語の配列（訳せなかったものは ''）
+async function translateGlosses(lang, pairs) {
+  const c = trCache(), key = p => p.w.toLowerCase() + '|' + p.g;
+  const need = [...new Map(pairs.filter(p => p.g && !c[key(p)]).map(p => [key(p), p])).values()];
+  TR_ERR = null;
+  if (need.length) {
+    if (!Sync.sb || !Sync.user) TR_ERR = new Error('日本語に訳すには「設定」でSupabaseにログインしてください');
+    else {
+      const parts = []; for (let i = 0; i < need.length; i += 60) parts.push(need.slice(i, i + 60));
+      await Promise.all(parts.map(async part => {
+        try { const d = await callAi({ mode: 'translate', lang, items: part.map(p => ({ w: p.w, g: p.g })) }); part.forEach((p, j) => { if (d.ja?.[j]) c[key(p)] = d.ja[j]; }); }
+        catch (e) { TR_ERR = e; }
+      }));
+      trSave();
+    }
+  }
+  return pairs.map(p => (p.g && c[key(p)]) || '');
+}
 // 辞書の項目 → カードの各欄
+// スペイン語：tg（訳す英語）と tw（その単語）を返し、意味は tmpl の {J} に日本語の訳語を入れて作る
 async function dictCard(l, term) {
   const items = await dictLookup(l, term); if (!items?.length) return null;
   const main = items.find(x => x.g) || items[0];
   const ofs = items.flatMap(x => (x.of || []).map(([lem, lab]) => ({ lem, lab, p: x.p })));
-  const out = { reading: main.i || '', pos: main.p || '', meaning: main.g || '', forms: main.f || '', lemma: '', note: '' };
+  const out = { reading: main.i || '', pos: main.p || '', meaning: main.g || '', forms: main.f || '', lemma: '', note: '', en: '', tw: '', tg: '', tmpl: '' };
+  if (l === 'es' && main.g) Object.assign(out, { en: main.g, tw: term, tg: main.g, tmpl: '{J}' });
   let used = null;
   if (ofs.length && (!main.g || main.of)) { // 変化形（fui → ir の点過去 yo、went → go の過去形）
     used = ofs.find(o => main.of?.some(([lem]) => lem === o.lem)) || ofs[0];
     const lemItems = await dictLookup(l, used.lem), lg = lemItems?.find(x => x.g)?.g || '';
     out.lemma = used.lem; out.forms = '';
     out.meaning = `${used.lem}${lg ? `（${firstSeg(lg)}）` : ''}の${used.lab}`;
+    if (l === 'es') Object.assign(out, { en: lg, tw: used.lem, tg: lg, tmpl: lg ? `${used.lem}（{J}）の${used.lab}` : out.meaning });
     if (!out.pos) out.pos = used.p || lemItems?.find(x => x.p)?.p || '';
   }
   const notes = ofs.filter(o => o !== used).map(o => `${o.lem} の${o.lab}`);
-  const otherPos = items.filter(x => x !== main && x.g).map(x => `${x.p || ''}：${x.g}`);
-  out.note = [notes.length ? `ほかに：${[...new Set(notes)].join('、')}` : '', ...otherPos].filter(Boolean).join('\n');
+  const otherPos = items.filter(x => x !== main && x.g).map(x => l === 'es' ? `${x.p || 'ほかの品詞'}としても使う` : `${x.p || ''}：${x.g}`);
+  out.note = [notes.length ? `ほかに：${[...new Set(notes)].join('、')}` : '', ...new Set(otherPos)].filter(Boolean).join('\n');
   return out;
 }
+// 訳語を入れて意味を完成させる（訳せなかったときは英語の最初の意味）
+const fillTmpl = (dc, ja) => dc.tmpl ? dc.tmpl.replace('{J}', ja || firstSeg(dc.tg)) : dc.meaning;
 
 // opts.ai = true：辞書を使わずAIに頼む（「AIで日本語の意味・用法も」ボタン）
 async function aiFill(opts = {}) {
@@ -516,10 +546,18 @@ async function aiFill(opts = {}) {
     const dc = await dictCard(l, term);
     if (dc && $('#eTerm')?.value.trim() === term) {
       let n = 0; const set = (id, val) => { const el = $('#' + id); if (el && val && !el.value.trim()) { el.value = val; n++; } };
-      set('eReading', dc.reading); set('ePos', dc.pos); set('eMeaning', dc.meaning); set('eNote', dc.note);
+      set('eReading', dc.reading); set('ePos', dc.pos); set('eNote', dc.note); set('eEn', dc.en);
       if (t.forms) { set('eLemma', dc.lemma); if (!dc.lemma) set('eForms', dc.forms); }
+      if (dc.tg && !$('#eMeaning').value.trim()) { // 英語の意味を日本語の訳語に（AIは訳すところだけ）
+        const btn = $('#aiBtn'); btn.disabled = true; btn.textContent = '✨ 日本語に訳しています…';
+        const [ja] = await translateGlosses(l, [{ w: dc.tw, g: dc.tg }]);
+        const b = $('#aiBtn'); if (b) { b.disabled = false; b.textContent = '✨ 自動入力'; }
+        if ($('#eTerm')?.value.trim() !== term) return;
+        set('eMeaning', fillTmpl(dc, ja));
+        if (!ja && TR_ERR) { const el = $('#aiErr'); if (el) { el.textContent = '⚠ 日本語に訳せなかったので英語のままです：' + TR_ERR.message; el.classList.remove('hidden'); } }
+      } else set('eMeaning', dc.meaning);
       $('#aiMore')?.classList.remove('hidden');
-      toast(n ? `辞書から${n}項目を入力しました。日本語の意味や用法がほしいときは「AIで日本語の意味・用法も」` : '空いている欄がないので、何も変更しませんでした', 5000);
+      toast(n ? `辞書から入力しました。用法やニュアンスもほしいときは「AIで日本語の意味・用法も」` : '空いている欄がないので、何も変更しませんでした', 5000);
       return;
     }
   }
@@ -580,14 +618,19 @@ async function dictExtract(l, texts) {
   const lemmaOf = toks.map((t, i) => { const e = ents[i]; const main = e?.find(x => x.g) || e?.[0];
     const of = main && (!main.g || (l === 'en' && main.of)) ? (main.of || e.find(x => x.of)?.of) : null; return of?.[0] || null; });
   const lemEnts = await Promise.all(lemmaOf.map(o => o ? dictLookup(l, o[0]) : null));
-  return toks.map((t, i) => {
+  const items = toks.map((t, i) => {
     const e = ents[i], main = e?.find(x => x.g) || e?.[0];
     if (!e) return { term: t.proper ? t.surface : t.key, surface: t.surface, form: '', reading: '', pos: t.proper ? '固有名詞？' : '', meaning: '', lemmaMeaning: '', ex: t.ex, notFound: true };
     const o = lemmaOf[i];
     if (o) { const le = lemEnts[i], lg = le?.find(x => x.g)?.g || '';
-      return { term: o[0], surface: t.surface, form: o[1], reading: main.i || '', pos: main.p || le?.find(x => x.p)?.p || '', meaning: '', lemmaMeaning: firstSeg(lg), ex: t.ex }; }
-    return { term: t.key, surface: t.surface, form: '', reading: main.i || '', pos: main.p || '', meaning: main.g || '', lemmaMeaning: main.g || '', ex: t.ex };
+      return { term: o[0], surface: t.surface, form: o[1], reading: main.i || '', pos: main.p || le?.find(x => x.p)?.p || '', meaning: '', lemmaMeaning: firstSeg(lg), ex: t.ex, en: lg, tw: o[0], tg: lg }; }
+    return { term: t.key, surface: t.surface, form: '', reading: main.i || '', pos: main.p || '', meaning: main.g || '', lemmaMeaning: main.g || '', ex: t.ex, en: main.g || '', tw: t.key, tg: main.g || '' };
   });
+  if (l === 'es') { // 英語の意味 → 日本語の訳語（全部まとめて1回）
+    const ja = await translateGlosses(l, items.map(it => ({ w: it.tw || '', g: it.tg || '' })));
+    items.forEach((it, i) => { if (!ja[i]) return; it.lemmaMeaning = ja[i]; if (!it.form) it.meaning = ja[i]; });
+  }
+  return items;
 }
 async function extractFromExamples(where, opts = {}) {
   let deck, examples, srcTerm, srcId = null;
@@ -609,7 +652,7 @@ async function extractFromExamples(where, opts = {}) {
   if (l) {
     const items = await dictExtract(l, examples.map(e => e.text));
     if (!$('#exExtract')) return;
-    XTR = { deckId: deck.id, examples, srcTerm, srcId, items: buildCandidates(items), byDict: true, retry };
+    XTR = { deckId: deck.id, examples, srcTerm, srcId, items: buildCandidates(items), byDict: true, retry, trErr: l === 'es' && TR_ERR ? TR_ERR.message : '' };
     return renderExtract();
   }
   try {
@@ -627,11 +670,11 @@ function buildCandidates(items) {
   for (const it of items) {
     const surface = it.surface || it.term;
     if (it.form && surface.toLowerCase() !== it.term.toLowerCase()) {
-      push({ kind: 'form', term: surface.toLowerCase() === surface ? surface : (it.notFound ? surface : surface.toLowerCase()), lemma: it.term, form: it.form, surface, reading: it.reading, pos: it.pos, ex: it.ex,
+      push({ kind: 'form', term: it.notFound ? surface : surface.toLowerCase(), lemma: it.term, form: it.form, surface, reading: it.reading, pos: it.pos, ex: it.ex, en: it.en || '',
         meaning: `${it.term}${it.lemmaMeaning ? `（${it.lemmaMeaning}）` : ''}の${it.form}${it.meaning ? '\n' + it.meaning : ''}` });
-      push({ kind: 'lemma', term: it.term, form: it.form, surface, reading: '', pos: it.pos, ex: it.ex, meaning: it.lemmaMeaning || it.meaning, fromForm: true });
+      push({ kind: 'lemma', term: it.term, form: it.form, surface, reading: '', pos: it.pos, ex: it.ex, en: it.en || '', meaning: it.lemmaMeaning || it.meaning, fromForm: true });
     } else {
-      push({ kind: 'lemma', term: it.term, surface, reading: it.reading, pos: it.pos, ex: it.ex, meaning: it.meaning, notFound: it.notFound });
+      push({ kind: 'lemma', term: it.term, surface, reading: it.reading, pos: it.pos, ex: it.ex, en: it.en || '', meaning: it.meaning, notFound: it.notFound });
     }
   }
   return out;
@@ -643,6 +686,7 @@ function renderExtract() {
   const isSrc = c => c.term.toLowerCase() === (XTR.srcTerm || '').toLowerCase();
   box.innerHTML = `<div class="ctx-box">${XTR.byDict ? `<div class="hint" style="margin:0 0 8px">📖 辞書で抽出しました（AIの無料枠は使っていません）。熟語のまとまり（tener que など）も探すなら →
       <button class="btn sm" onclick="XTR.retry()">🤖 AIで抽出し直す</button></div>` : ''}
+    ${XTR.trErr ? `<div class="warn" style="margin-bottom:8px">⚠ 日本語に訳せなかった意味は英語のままです：${esc(XTR.trErr)}</div>` : ''}
     <div class="fl">🔍 見つかった単語・熟語 <span class="muted">— 追加するものにチェック</span></div>
     ${XTR.items.map((c, i) => {
       const old = xtrExisting(c), dup = !!old || isSrc(c);
@@ -684,7 +728,7 @@ async function addExtracted() {
     const ex = attach ? xtrExample(c) : null;
     const id = uid();
     await save('cards', {
-      id, deckId: XTR.deckId, term: c.term, reading: c.reading, pos: c.pos, meaning: c.meaning, usage: '',
+      id, deckId: XTR.deckId, term: c.term, reading: c.reading, pos: c.pos, meaning: c.meaning, en: c.en || '', usage: '',
       lemma: c.kind === 'form' ? c.lemma : '', forms: '',
       examples: ex ? [ex] : [],
       note: XTR.note || (XTR.srcTerm ? `「${XTR.srcTerm}」の例文から追加` : ''), source: XTR.source || null,
@@ -720,7 +764,8 @@ async function fillLemmaCards(ids, deck) {
       const cur = S.cards.find(x => x.id === id);
       if (cur) {
         const upd = { ...cur };
-        for (const k of ['reading', 'pos', 'meaning', 'forms']) if (!upd[k] && dc[k]) upd[k] = dc[k];
+        for (const k of ['reading', 'pos', 'forms', 'en']) if (!upd[k] && dc[k]) upd[k] = dc[k];
+        if (!upd.meaning) upd.meaning = fillTmpl(dc, l === 'es' && dc.tg ? (await translateGlosses(l, [{ w: dc.tw, g: dc.tg }]))[0] : '');
         if (dc.note) upd.note = [upd.note, dc.note].filter(Boolean).join('\n');
         await save('cards', upd);
       }
@@ -750,7 +795,7 @@ async function saveEditor(next) {
   const card = {
     id: EDIT.id || uid(), deckId: deck.id, term,
     reading: $('#eReading').value.trim(), pos: $('#ePos').value.trim(),
-    lemma: $('#eLemma').value.trim(), forms: $('#eForms').value.trim(),
+    lemma: $('#eLemma').value.trim(), forms: $('#eForms').value.trim(), en: $('#eEn').value.trim(),
     meaning: $('#eMeaning').value.trim(), usage: $('#eUsage').value.trim(),
     examples: $$('#eExs .ex-row').map(r => ({ text: r.querySelector('.ex-text').value.trim(), translation: r.querySelector('.ex-tr').value.trim(),
       ...(r.dataset.form ? { form: r.dataset.form } : {}) })).filter(e => e.text),
@@ -779,7 +824,7 @@ function formsTable(forms, hl = -1) {
 function cardDetailHTML(c) {
   const d = deckOf(c), t = typeOf(d);
   const field = (label, val) => val ? `<div class="f"><div class="fl">${label}</div><div class="fv">${esc(val)}</div></div>` : '';
-  let h = field('原形', c.lemma) + field(t.meaning, c.meaning) + field(t.usage, c.usage);
+  let h = field('原形', c.lemma) + field(t.meaning, c.meaning) + field(t.en || '英語の意味', c.en) + field(t.usage, c.usage);
   const forms = parseForms(c.forms);
   if (forms.length) h += `<details class="f forms" onclick="event.stopPropagation()"><summary class="fl">${t.forms || '活用・変化'}（${forms.length}）</summary>${formsTable(forms)}</details>`;
   else if (c.forms) h += field(t.forms || '活用・変化', c.forms);
@@ -801,7 +846,7 @@ function renderList() {
   renderListItems();
 }
 function searchText(c) {
-  return [c.term, c.reading, c.pos, c.lemma, c.forms, c.meaning, c.usage, c.note, ...(c.examples || []).map(e => e.text + ' ' + e.translation)].join(' ').toLowerCase();
+  return [c.term, c.reading, c.pos, c.lemma, c.forms, c.meaning, c.en, c.usage, c.note, ...(c.examples || []).map(e => e.text + ' ' + e.translation)].join(' ').toLowerCase();
 }
 function renderListItems() {
   const q = UI.listQuery.trim().toLowerCase();
@@ -1470,11 +1515,11 @@ async function extractFromText(chunks, notice, opts = {}) {
     retry: () => extractFromText(chunks, notice, { ai: true }) };
   if (l) {
     modal(`<h3>資料から単語を抽出</h3><div class="muted" style="margin-bottom:8px">${esc(m.name)} p.${UI.matPage + 1} → 「${esc(deck.name)}」に追加</div>
-      <div id="exExtract"><div class="ctx-box muted">📖 辞書で単語を引いています…</div></div>
+      <div id="exExtract"><div class="ctx-box muted">📖 辞書で単語を引いて${l === 'es' ? '、日本語に訳して' : ''}います…</div></div>
       <div class="modal-actions"><span class="grow"></span><button class="btn" onclick="closeModal()">閉じる</button></div>`);
     const items = await dictExtract(l, chunks);
     if (!$('#exExtract')) return;
-    XTR = { ready: true, deckId: deck.id, examples: chunks.map(text => ({ text, translation: '' })), srcTerm: '', items: buildCandidates(items), byDict: true, ...meta };
+    XTR = { ready: true, deckId: deck.id, examples: chunks.map(text => ({ text, translation: '' })), srcTerm: '', items: buildCandidates(items), byDict: true, ...meta, trErr: l === 'es' && TR_ERR ? TR_ERR.message : '' };
     return renderExtract();
   }
   modal(`<h3>資料から単語・熟語を抽出</h3><div class="muted" style="margin-bottom:8px">${esc(m.name)} p.${UI.matPage + 1} → 「${esc(deck.name)}」に追加</div>

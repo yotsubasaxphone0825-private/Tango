@@ -105,6 +105,18 @@ ${b.part === "basic" ? LEMMA_RULES : FORMS_GUIDE}`;
   ].filter(Boolean).join("\n\n");
 }
 
+// ---- 辞書の英語の意味を日本語の訳語にするモード（mode: "translate"） ----
+const SCHEMA_TRANSLATE = { type: "OBJECT", properties: { ja: { type: "ARRAY", items: { type: "STRING" } } }, required: ["ja"] };
+const SYSTEM_TRANSLATE = `あなたは西和辞典の編集者です。スペイン語などの単語と、その英語の語義（辞書の説明）を受け取り、
+単語帳に載せる短い日本語の訳語に直してJSONで返します。
+- 説明文ではなく訳語にする（例：to go → 行く、house → 家）。語義が複数あれば「、」でつなぐ（最大3つ）
+- 元の単語の意味として自然な訳を選ぶ（例：perro の dog → 犬）
+- 入力と同じ順番・同じ個数で返す。わからなければ空文字`;
+function buildTranslatePrompt(b: Record<string, unknown>) {
+  const items = Array.isArray(b.items) ? b.items.slice(0, 80) : [];
+  return `言語コード: ${str(b.lang, 20) || "不明"}\n${items.map((it: Record<string, unknown>, i: number) => `${i + 1}. ${str(it?.w, 80)}: ${str(it?.g, 200)}`).join("\n")}`;
+}
+
 // ---- 例文から単語・熟語を抽出するモード（mode: "extract"） ----
 const SCHEMA_EXTRACT = {
   type: "OBJECT",
@@ -192,15 +204,17 @@ Deno.serve(async (req) => {
 
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return json({ error: "リクエストの形式が正しくありません" }, 400); }
-  const extract = body.mode === "extract";
+  const extract = body.mode === "extract", translate = body.mode === "translate";
   if (extract) {
     if (!Array.isArray(body.examples) || !body.examples.some((e) => str(e))) return json({ error: "例文が空です" }, 400);
+  } else if (translate) {
+    if (!Array.isArray(body.items) || !body.items.length) return json({ error: "訳す語義が空です" }, 400);
   } else if (!str(body.term)) return json({ error: "単語が空です" }, 400);
 
   const formsOnly = body.mode === "forms";
-  const prompt = extract ? buildExtractPrompt(body) : formsOnly ? buildFormsPrompt(body) : buildPrompt(body);
-  const system = extract ? SYSTEM_EXTRACT : SYSTEM;
-  const schema = extract ? SCHEMA_EXTRACT : formsOnly ? SCHEMA_FORMS : body.part === "basic" ? SCHEMA_BASIC : SCHEMA;
+  const prompt = extract ? buildExtractPrompt(body) : translate ? buildTranslatePrompt(body) : formsOnly ? buildFormsPrompt(body) : buildPrompt(body);
+  const system = extract ? SYSTEM_EXTRACT : translate ? SYSTEM_TRANSLATE : SYSTEM;
+  const schema = extract ? SCHEMA_EXTRACT : translate ? SCHEMA_TRANSLATE : formsOnly ? SCHEMA_FORMS : body.part === "basic" ? SCHEMA_BASIC : SCHEMA;
   // 速さ優先：考える量（thinking）を最小に。モデルが対応していなければ順に緩める
   const callModel = async (m: string) => {
     let r!: Response;
@@ -246,6 +260,10 @@ Deno.serve(async (req) => {
   catch { return json({ error: "AIの返答を読み取れませんでした。もう一度試してください" }, 502); }
 
   if (formsOnly) return json({ lemma: str(out.lemma, 120), forms: str(out.forms, 4000) });
+  if (translate) {
+    const n = Math.min((body.items as unknown[]).length, 80), ja = Array.isArray(out.ja) ? out.ja : [];
+    return json({ ja: Array.from({ length: n }, (_, i) => str(ja[i], 120)) });
+  }
 
   if (extract) {
     const n = (body.examples as unknown[]).length;
