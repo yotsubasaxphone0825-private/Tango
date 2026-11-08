@@ -564,7 +564,7 @@ async function aiFill(opts = {}) {
         const tTr = Date.now();
         const [ja] = await translateGlosses(l, [{ w: dc.tw, g: dc.tg }]);
         const b = $('#aiBtn'); if (b) { b.disabled = false; b.textContent = '✨ 自動入力'; }
-        showAiInfo(`⏱ 辞書 ${sec(dictMs)} ／ 翻訳 ${sec(Date.now() - tTr)}${TR_TIME ? `（うち ${fmtTiming(TR_TIME)}）` : '（覚えていた訳を使用）'}`);
+        showAiInfo(`⏱ 辞書 ${sec(dictMs)}${TR_ERR && !ja ? '' : ` ／ 翻訳 ${sec(Date.now() - tTr)}${TR_TIME ? `（うち ${fmtTiming(TR_TIME)}）` : '（前に訳したものを使用）'}`}`);
         if ($('#eTerm')?.value.trim() !== term) return;
         set('eMeaning', fillTmpl(dc, ja));
         if (!ja && TR_ERR) { const el = $('#aiErr'); if (el) { el.textContent = '⚠ 日本語に訳せなかったので英語のままです：' + TR_ERR.message; el.classList.remove('hidden'); } }
