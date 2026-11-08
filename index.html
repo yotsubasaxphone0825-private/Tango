@@ -397,7 +397,7 @@ function openEditor(cardId, o = {}) {
   if (!S.decks.length) { toast('先に単語帳を作成してください'); return openDeckEditor(); }
   const c = cardId ? S.cards.find(x => x.id === cardId) : null;
   const deckId = c?.deckId || (deckById(o.deckId) ? o.deckId : null) || (deckById(UI.listDeck) ? UI.listDeck : S.decks[0].id);
-  const v = c || { term: o.term || '', reading:'', pos:'', lemma:'', forms:'', meaning:'', usage:'', examples:[], tags:[], note:'' };
+  const v = c || { term: o.term || '', reading:'', pos:'', lemma:'', forms:'', meaning:'', usage:'', examples:[], note:'' };
   EDIT = { id: c?.id || null, contexts: o.contexts || [], source: c?.source || o.source || null };
   modal(`<h3>${c ? '単語を編集' : '単語を追加'}</h3>
     <div class="fgroup"><label>単語帳</label><select id="eDeck" onchange="editorLabels();dupCheck()">${S.decks.map(d => `<option value="${d.id}" ${d.id === deckId ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select></div>
@@ -405,7 +405,9 @@ function openEditor(cardId, o = {}) {
       <div class="fgroup"><label data-l="term"></label><input id="eTerm" value="${esc(v.term)}" oninput="dupCheck()"><div id="eDup" class="warn hidden"></div></div>
       <div class="fgroup"><label data-l="reading"></label><input id="eReading" value="${esc(v.reading)}"></div>
     </div>
-    <div class="ai-row"><button class="btn" id="aiBtn" onclick="aiFill()">✨ AIで自動入力</button><small class="muted">例文以外の空いている欄をAIが埋めます</small></div>
+    <div class="ai-row"><button class="btn" id="aiBtn" onclick="aiFill()">✨ 自動入力</button>
+      <button class="btn sm hidden" id="aiMore" onclick="aiFill({ai:true})">🤖 AIで日本語の意味・用法も</button>
+      <small class="muted">例文以外の空いている欄を、辞書（スペイン語・英語）かAIで埋めます</small></div>
     <div id="aiErr" class="warn hidden" style="white-space:pre-wrap;margin:-6px 0 12px;user-select:text"></div>
     <div class="grid2">
       <div class="fgroup"><label data-l="pos"></label><input id="ePos" list="posList" value="${esc(v.pos)}" placeholder="選択または自由入力"><datalist id="posList"></datalist></div>
@@ -420,7 +422,6 @@ function openEditor(cardId, o = {}) {
       <textarea id="eForms" rows="4" placeholder="直説法現在 yo: voy&#10;点過去 yo: fui&#10;未来 nosotros: iremos">${esc(v.forms || '')}</textarea></div>
     <div class="fgroup"><label data-l="ex"></label><div id="eExs">${v.examples.map(exRow).join('')}</div><button class="btn sm" onclick="addExRow().querySelector('textarea').focus()">＋ 追加</button>
       <button class="btn sm" onclick="extractFromExamples('editor')">🔍 例文から単語を抽出</button><div id="exExtract" class="hidden" style="margin-top:8px"></div></div>
-    <div class="fgroup"><label>タグ <small class="muted">スペース区切り（例：重要 過去問R5）</small></label><input id="eTags" value="${esc((v.tags || []).join(' '))}"></div>
     <div class="fgroup"><label>メモ</label><textarea id="eNote" rows="2">${esc(v.note)}</textarea></div>
     <div class="modal-actions"><span class="grow"></span><button class="btn" onclick="closeModal()">キャンセル</button>
       ${c ? '' : `<button class="btn" onclick="saveEditor(true)">保存して続けて追加</button>`}<button class="btn primary" onclick="saveEditor(false)">保存</button></div>`);
@@ -469,17 +470,71 @@ async function callAi(body) {
   }
   return data;
 }
-async function aiFill() {
-  if (!Sync.sb || !Sync.user) return toast('AI自動入力を使うには「設定」でSupabaseにログインしてください', 5000);
+/* ---------- 辞書（スペイン語：Wiktionary／英語：EJDict）。AIを使わずに一瞬で引く ---------- */
+const DICT = { idx: {}, files: {} };
+const dictLang = deck => { const l = (deck?.lang || '').slice(0, 2); return deck?.type === 'lang' && (l === 'es' || l === 'en') ? l : ''; };
+const dictKey = w => w.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z]/g, '');
+function dictIndex(l) {
+  return DICT.idx[l] ||= fetch(`dict/${l}/index.json`).then(r => r.ok ? r.json() : null).then(j => j && { split: new Set(j.split) }).catch(() => null);
+}
+async function dictLookup(l, word) {
+  const w = String(word || '').trim().toLowerCase(); if (!l || !w) return null;
+  const idx = await dictIndex(l); if (!idx) return null;
+  const k = dictKey(w); let n = 2, s = k.slice(0, n).padEnd(n, '_');
+  while (idx.split.has(s)) { n++; s = k.slice(0, n).padEnd(n, '_'); }
+  const file = DICT.files[l + s] ||= fetch(`dict/${l}/k_${s}.json`).then(r => r.ok ? r.json() : {}).catch(() => ({}));
+  return (await file)[w] || null;
+}
+const firstSeg = g => String(g || '').split(/\s*[;/]\s*/)[0];
+// 辞書の項目 → カードの各欄
+async function dictCard(l, term) {
+  const items = await dictLookup(l, term); if (!items?.length) return null;
+  const main = items.find(x => x.g) || items[0];
+  const ofs = items.flatMap(x => (x.of || []).map(([lem, lab]) => ({ lem, lab, p: x.p })));
+  const out = { reading: main.i || '', pos: main.p || '', meaning: main.g || '', forms: main.f || '', lemma: '', note: '' };
+  let used = null;
+  if (ofs.length && (!main.g || main.of)) { // 変化形（fui → ir の点過去 yo、went → go の過去形）
+    used = ofs.find(o => main.of?.some(([lem]) => lem === o.lem)) || ofs[0];
+    const lemItems = await dictLookup(l, used.lem), lg = lemItems?.find(x => x.g)?.g || '';
+    out.lemma = used.lem; out.forms = '';
+    out.meaning = `${used.lem}${lg ? `（${firstSeg(lg)}）` : ''}の${used.lab}`;
+    if (!out.pos) out.pos = used.p || lemItems?.find(x => x.p)?.p || '';
+  }
+  const notes = ofs.filter(o => o !== used).map(o => `${o.lem} の${o.lab}`);
+  const otherPos = items.filter(x => x !== main && x.g).map(x => `${x.p || ''}：${x.g}`);
+  out.note = [notes.length ? `ほかに：${[...new Set(notes)].join('、')}` : '', ...otherPos].filter(Boolean).join('\n');
+  return out;
+}
+
+// opts.ai = true：辞書を使わずAIに頼む（「AIで日本語の意味・用法も」ボタン）
+async function aiFill(opts = {}) {
   const term = $('#eTerm').value.trim(); if (!term) return toast('先に単語を入力してください');
   const deck = deckById($('#eDeck').value), t = typeOf(deck);
+  $('#aiErr')?.classList.add('hidden');
+  const l = dictLang(deck);
+  if (!opts.ai && l) { // まず辞書（一瞬・無料・活用表が正確）
+    const dc = await dictCard(l, term);
+    if (dc && $('#eTerm')?.value.trim() === term) {
+      let n = 0; const set = (id, val) => { const el = $('#' + id); if (el && val && !el.value.trim()) { el.value = val; n++; } };
+      set('eReading', dc.reading); set('ePos', dc.pos); set('eMeaning', dc.meaning); set('eNote', dc.note);
+      if (t.forms) { set('eLemma', dc.lemma); if (!dc.lemma) set('eForms', dc.forms); }
+      $('#aiMore')?.classList.remove('hidden');
+      toast(n ? `辞書から${n}項目を入力しました。日本語の意味や用法がほしいときは「AIで日本語の意味・用法も」` : '空いている欄がないので、何も変更しませんでした', 5000);
+      return;
+    }
+  }
+  if (!Sync.sb || !Sync.user) return toast(l ? '辞書に見つかりませんでした。AIを使うには「設定」でSupabaseにログインしてください' : 'AI自動入力を使うには「設定」でSupabaseにログインしてください', 5000);
   const btn = $('#aiBtn'); btn.disabled = true;
   const t0 = Date.now(), tick = () => { const b = $('#aiBtn'); if (b?.disabled) b.textContent = `✨ 生成中… ${Math.round((Date.now() - t0) / 1000)}秒`; };
   tick(); const timer = setInterval(tick, 1000);
   $('#aiErr')?.classList.add('hidden');
   const alive = () => $('#eTerm') && $('#eTerm').value.trim() === term; // 画面が変わっていないか
   let filled = 0;
-  const set = (id, val) => { const el = $('#' + id); if (el && val && !el.value.trim()) { el.value = val; filled++; } };
+  const set = (id, val) => {
+    const el = $('#' + id); if (!el || !val) return;
+    if (!el.value.trim()) { el.value = val; filled++; }
+    else if (opts.ai && id === 'eMeaning' && !el.value.includes(val)) { el.value = el.value.trim() + '\n' + val; filled++; } // 辞書の英語の意味に日本語を足す
+  };
   const base = { term, deckType: deck.type, deckName: deck.name, lang: deck.lang, posOptions: t.posOptions, contexts: (EDIT?.contexts || []).map(c => c.text).slice(0, 5) };
   // 語学：意味など と 活用表 を同時に頼み、届いたものから順に埋める
   const jobs = [
@@ -487,17 +542,16 @@ async function aiFill() {
       if (!alive()) return;
       set('eReading', data.reading); set('ePos', data.pos); set('eMeaning', data.meaning); set('eUsage', data.usage); set('eNote', data.note);
       if (t.forms) set('eLemma', data.lemma);
-      if (data.tags?.length && !$('#eTags').value.trim()) { $('#eTags').value = data.tags.join(' '); filled++; }
     }),
   ];
-  if (t.forms) jobs.push(callAi({ mode: 'forms', term, lang: deck.lang, deckType: deck.type, deckName: deck.name }).then(data => {
+  if (t.forms && !$('#eForms').value.trim()) jobs.push(callAi({ mode: 'forms', term, lang: deck.lang, deckType: deck.type, deckName: deck.name }).then(data => {
     if (!alive()) return;
     if (!$('#eLemma').value.trim()) set('eLemma', data.lemma);
     if (!$('#eLemma').value.trim()) set('eForms', data.forms); // 変化形のカードには活用表を入れない
   }));
   const results = await Promise.allSettled(jobs);
   clearInterval(timer);
-  const b = $('#aiBtn'); if (b) { b.disabled = false; b.textContent = '✨ AIで自動入力'; }
+  const b = $('#aiBtn'); if (b) { b.disabled = false; b.textContent = '✨ 自動入力'; }
   const err = results.find(r => r.status === 'rejected')?.reason;
   if (err && alive()) {
     const el = $('#aiErr'); if (el) { el.textContent = '⚠ ' + (filled ? '一部だけ入力できました：' : '自動入力に失敗：') + err.message; el.classList.remove('hidden'); }
@@ -509,7 +563,33 @@ async function aiFill() {
 /* ---------- 例文から単語・熟語を抽出して追加 ---------- */
 let XTR = null;
 // where: 'editor'（編集中の画面から）または カードID（一覧から）
-async function extractFromExamples(where) {
+// 辞書で文中の単語を引いて候補を作る（AIなし・一瞬）。熟語のまとまりは見つけられない
+async function dictExtract(l, texts) {
+  const toks = [], seen = new Set();
+  texts.forEach((text, ex) => {
+    for (const m of text.matchAll(/[\p{L}][\p{L}\p{M}]*(?:['’-][\p{L}\p{M}]+)*/gu)) {
+      const k = m[0].toLowerCase();
+      if (seen.has(k) || /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(k)) continue;
+      // 文の途中で大文字から始まる語は、人名・地名など（固有名詞）の可能性が高い
+      const start = /(^|[.!?¿¡:"“«\n]\s*)$/.test(text.slice(0, m.index));
+      const proper = !start && m[0][0] !== k[0];
+      seen.add(k); toks.push({ surface: m[0], key: k, ex, proper });
+    }
+  });
+  const ents = await Promise.all(toks.map(t => t.proper ? null : dictLookup(l, t.key)));
+  const lemmaOf = toks.map((t, i) => { const e = ents[i]; const main = e?.find(x => x.g) || e?.[0];
+    const of = main && (!main.g || (l === 'en' && main.of)) ? (main.of || e.find(x => x.of)?.of) : null; return of?.[0] || null; });
+  const lemEnts = await Promise.all(lemmaOf.map(o => o ? dictLookup(l, o[0]) : null));
+  return toks.map((t, i) => {
+    const e = ents[i], main = e?.find(x => x.g) || e?.[0];
+    if (!e) return { term: t.proper ? t.surface : t.key, surface: t.surface, form: '', reading: '', pos: t.proper ? '固有名詞？' : '', meaning: '', lemmaMeaning: '', ex: t.ex, notFound: true };
+    const o = lemmaOf[i];
+    if (o) { const le = lemEnts[i], lg = le?.find(x => x.g)?.g || '';
+      return { term: o[0], surface: t.surface, form: o[1], reading: main.i || '', pos: main.p || le?.find(x => x.p)?.p || '', meaning: '', lemmaMeaning: firstSeg(lg), ex: t.ex }; }
+    return { term: t.key, surface: t.surface, form: '', reading: main.i || '', pos: main.p || '', meaning: main.g || '', lemmaMeaning: main.g || '', ex: t.ex };
+  });
+}
+async function extractFromExamples(where, opts = {}) {
   let deck, examples, srcTerm, srcId = null;
   if (where === 'editor') {
     deck = deckById($('#eDeck').value); srcTerm = $('#eTerm').value.trim(); srcId = EDIT?.id || null;
@@ -519,16 +599,24 @@ async function extractFromExamples(where) {
     deck = deckOf(c); srcTerm = c.term; srcId = c.id; examples = c.examples || [];
   }
   if (!examples.length) return toast('先に例文を入力してください');
-  if (!Sync.sb || !Sync.user) return toast('AI機能を使うには「設定」でSupabaseにログインしてください', 5000);
-  if (where !== 'editor') modal(`<h3>例文から単語を抽出</h3><div class="muted" style="margin-bottom:8px">「${esc(srcTerm)}」の例文</div><div id="exExtract"></div>
+  const l = opts.ai ? '' : dictLang(deck);
+  if (!l && (!Sync.sb || !Sync.user)) return toast('AI機能を使うには「設定」でSupabaseにログインしてください', 5000);
+  if (where !== 'editor' && !$('#exExtract')) modal(`<h3>例文から単語を抽出</h3><div class="muted" style="margin-bottom:8px">「${esc(srcTerm)}」の例文</div><div id="exExtract"></div>
     <div class="modal-actions"><span class="grow"></span><button class="btn" onclick="closeModal()">閉じる</button></div>`);
   const box = $('#exExtract'); box.classList.remove('hidden');
-  box.innerHTML = '<div class="ctx-box muted">✨ 例文から単語を探しています…</div>';
+  box.innerHTML = `<div class="ctx-box muted">${l ? '📖 辞書で' : '✨ AIで'}例文から単語を探しています…</div>`;
+  const retry = () => extractFromExamples(where, { ai: true });
+  if (l) {
+    const items = await dictExtract(l, examples.map(e => e.text));
+    if (!$('#exExtract')) return;
+    XTR = { deckId: deck.id, examples, srcTerm, srcId, items: buildCandidates(items), byDict: true, retry };
+    return renderExtract();
+  }
   try {
     const data = await callAi({ mode: 'extract', deckType: deck.type, deckName: deck.name, lang: deck.lang,
       posOptions: typeOf(deck).posOptions, examples: examples.map(e => e.text).slice(0, 10) });
     if (!$('#exExtract')) return; // 画面が閉じられた
-    XTR = { deckId: deck.id, examples, srcTerm, srcId, items: buildCandidates(data.items || []) };
+    XTR = { deckId: deck.id, examples, srcTerm, srcId, items: buildCandidates(data.items || []), retry };
     renderExtract();
   } catch (e) { const b = $('#exExtract'); if (b) b.innerHTML = `<div class="ctx-box warn">抽出に失敗：${esc(e.message)}</div>`; }
 }
@@ -539,11 +627,11 @@ function buildCandidates(items) {
   for (const it of items) {
     const surface = it.surface || it.term;
     if (it.form && surface.toLowerCase() !== it.term.toLowerCase()) {
-      push({ kind: 'form', term: surface, lemma: it.term, form: it.form, surface, reading: it.reading, pos: it.pos, ex: it.ex,
+      push({ kind: 'form', term: surface.toLowerCase() === surface ? surface : (it.notFound ? surface : surface.toLowerCase()), lemma: it.term, form: it.form, surface, reading: it.reading, pos: it.pos, ex: it.ex,
         meaning: `${it.term}${it.lemmaMeaning ? `（${it.lemmaMeaning}）` : ''}の${it.form}${it.meaning ? '\n' + it.meaning : ''}` });
       push({ kind: 'lemma', term: it.term, form: it.form, surface, reading: '', pos: it.pos, ex: it.ex, meaning: it.lemmaMeaning || it.meaning, fromForm: true });
     } else {
-      push({ kind: 'lemma', term: it.term, surface, reading: it.reading, pos: it.pos, ex: it.ex, meaning: it.meaning });
+      push({ kind: 'lemma', term: it.term, surface, reading: it.reading, pos: it.pos, ex: it.ex, meaning: it.meaning, notFound: it.notFound });
     }
   }
   return out;
@@ -553,16 +641,19 @@ function renderExtract() {
   const box = $('#exExtract'); if (!box || !XTR) return;
   if (!XTR.items.length) { box.innerHTML = '<div class="ctx-box muted">追加できそうな単語は見つかりませんでした</div>'; return; }
   const isSrc = c => c.term.toLowerCase() === (XTR.srcTerm || '').toLowerCase();
-  box.innerHTML = `<div class="ctx-box"><div class="fl">🔍 例文から見つかった単語・熟語 <span class="muted">— 追加するものにチェック</span></div>
+  box.innerHTML = `<div class="ctx-box">${XTR.byDict ? `<div class="hint" style="margin:0 0 8px">📖 辞書で抽出しました（AIの無料枠は使っていません）。熟語のまとまり（tener que など）も探すなら →
+      <button class="btn sm" onclick="XTR.retry()">🤖 AIで抽出し直す</button></div>` : ''}
+    <div class="fl">🔍 見つかった単語・熟語 <span class="muted">— 追加するものにチェック</span></div>
     ${XTR.items.map((c, i) => {
       const old = xtrExisting(c), dup = !!old || isSrc(c);
       const sub = c.kind === 'form' ? `<small class="muted">${esc(c.lemma)} の${esc(c.form)}</small>` : c.fromForm ? '<span class="chip">原形</span>' : '';
       const chk = dup
         ? (old && !isSrc(c) ? `<input type="checkbox" data-append="${i}">` : '<input type="checkbox" disabled>')
-        : `<input type="checkbox" data-i="${i}" checked>`;
+        : `<input type="checkbox" data-i="${i}" ${c.notFound ? '' : 'checked'}>`;
       return `<label class="xitem ${dup ? 'done' : ''}">${chk}
         <span><b>${esc(c.term)}</b> ${sub} ${c.pos ? `<span class="chip">${esc(c.pos)}</span>` : ''}
         ${dup ? `<small class="muted">✓ 登録済み${old && !isSrc(c) ? '（チェックでこの例文を追加）' : ''}</small>` : ''}
+        ${c.notFound && !dup ? '<small class="muted">辞書になし（固有名詞など）</small>' : ''}
         <div class="muted" style="white-space:pre-wrap">${esc(c.meaning)}</div></span></label>`;
     }).join('')}
     <label class="check" style="margin-top:8px"><input type="checkbox" id="xAttach" ${XTR.fromMaterial ? '' : 'checked'}> ${XTR.fromMaterial ? '資料の文（その単語が出てくる1文）を例文として付ける' : '元の例文を、追加する単語の例文として付ける'}</label>
@@ -595,7 +686,7 @@ async function addExtracted() {
     await save('cards', {
       id, deckId: XTR.deckId, term: c.term, reading: c.reading, pos: c.pos, meaning: c.meaning, usage: '',
       lemma: c.kind === 'form' ? c.lemma : '', forms: '',
-      examples: ex ? [ex] : [], tags: [XTR.fromMaterial ? '資料から' : '例文から'],
+      examples: ex ? [ex] : [],
       note: XTR.note || (XTR.srcTerm ? `「${XTR.srcTerm}」の例文から追加` : ''), source: XTR.source || null,
       srs: newSrs(), createdAt: Date.now(),
     });
@@ -621,8 +712,21 @@ async function fillLemmaCards(ids, deck) {
   let fail = 0, done = 0;
   const base = { deckType: deck.type, deckName: deck.name, lang: deck.lang, posOptions: typeOf(deck).posOptions };
   toast(`活用・変化の表を作成中… 0 / ${ids.length}`, 120000);
+  const l = dictLang(deck);
   await runPool(ids, 2, async id => {
     const c = S.cards.find(x => x.id === id); if (!c) return;
+    const dc = l ? await dictCard(l, c.term) : null; // まず辞書（一瞬・AIの無料枠を使わない）
+    if (dc && (dc.forms || dc.lemma || dc.meaning)) {
+      const cur = S.cards.find(x => x.id === id);
+      if (cur) {
+        const upd = { ...cur };
+        for (const k of ['reading', 'pos', 'meaning', 'forms']) if (!upd[k] && dc[k]) upd[k] = dc[k];
+        if (dc.note) upd.note = [upd.note, dc.note].filter(Boolean).join('\n');
+        await save('cards', upd);
+      }
+      toast(`活用・変化の表を作成中… ${++done} / ${ids.length}`, 120000);
+      return;
+    }
     // 意味など と 活用表 を同時に頼む
     const [basic, forms] = await Promise.allSettled([callAi({ ...base, term: c.term, part: 'basic' }), callAi({ ...base, mode: 'forms', term: c.term })]);
     const cur = S.cards.find(x => x.id === id);
@@ -650,7 +754,6 @@ async function saveEditor(next) {
     meaning: $('#eMeaning').value.trim(), usage: $('#eUsage').value.trim(),
     examples: $$('#eExs .ex-row').map(r => ({ text: r.querySelector('.ex-text').value.trim(), translation: r.querySelector('.ex-tr').value.trim(),
       ...(r.dataset.form ? { form: r.dataset.form } : {}) })).filter(e => e.text),
-    tags: $('#eTags').value.split(/[\s,、]+/).filter(Boolean),
     note: $('#eNote').value.trim(), source: EDIT.source,
     srs: old?.srs || newSrs(), createdAt: old?.createdAt || Date.now(), updatedAt: Date.now(),
   };
@@ -684,7 +787,6 @@ function cardDetailHTML(c) {
   const variants = S.cards.filter(x => x.id !== c.id && x.deckId === c.deckId && x.lemma && x.lemma.toLowerCase() === c.term.toLowerCase());
   if (variants.length) h += `<div class="f"><div class="fl">変化形のカード</div>${variants.map(v => `<span class="chip">${esc(v.term)}</span>`).join(' ')}</div>`;
   h += field('メモ', c.note);
-  if (c.tags?.length) h += `<div class="f">${c.tags.map(x => `<span class="chip">#${esc(x)}</span>`).join(' ')}</div>`;
   if (c.source) { const m = S.materials.find(m => m.id === c.source.materialId); if (m) h += `<div class="f"><small class="muted">出典：${esc(m.name)}${c.source.page != null ? ` p.${c.source.page + 1}` : ''}</small></div>`; }
   return h;
 }
@@ -692,14 +794,14 @@ function renderList() {
   if (UI.listDeck !== 'all' && !deckById(UI.listDeck)) UI.listDeck = 'all';
   V.innerHTML = `<div class="toolbar">
     <select onchange="UI.listDeck=this.value;renderListItems()"><option value="all">すべての単語帳</option>${S.decks.map(d => `<option value="${d.id}" ${UI.listDeck === d.id ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select>
-    <input type="search" placeholder="検索（単語・意味・例文・タグ）" value="${esc(UI.listQuery)}" oninput="UI.listQuery=this.value;renderListItems()">
+    <input type="search" placeholder="検索（単語・意味・例文）" value="${esc(UI.listQuery)}" oninput="UI.listQuery=this.value;renderListItems()">
     <select onchange="UI.listSort=this.value;renderListItems()">${[['new','新しい順'],['old','古い順'],['abc','あいうえお/ABC順'],['weak','苦手な順']].map(([v, l]) => `<option value="${v}" ${UI.listSort === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
     <button class="btn primary" onclick="openEditor(null)">＋ 単語を追加</button>
   </div><div id="lCount" class="muted" style="margin-bottom:6px"></div><div id="lItems"></div>`;
   renderListItems();
 }
 function searchText(c) {
-  return [c.term, c.reading, c.pos, c.lemma, c.forms, c.meaning, c.usage, c.note, ...(c.tags || []).map(t => '#' + t), ...(c.examples || []).map(e => e.text + ' ' + e.translation)].join(' ').toLowerCase();
+  return [c.term, c.reading, c.pos, c.lemma, c.forms, c.meaning, c.usage, c.note, ...(c.examples || []).map(e => e.text + ' ' + e.translation)].join(' ').toLowerCase();
 }
 function renderListItems() {
   const q = UI.listQuery.trim().toLowerCase();
@@ -1359,10 +1461,22 @@ function extractFromSelection() {
   if (!chunks.length) return;
   extractFromText(chunks, rest ? '選択範囲が長いので前半だけ抽出しました' : '');
 }
-async function extractFromText(chunks, notice) {
+async function extractFromText(chunks, notice, opts = {}) {
   const m = curMat(), deck = deckById(m.deckId);
   if (!deck) return toast('追加先の単語帳を選んでください');
-  if (!Sync.sb || !Sync.user) return toast('AI機能を使うには「設定」でSupabaseにログインしてください', 5000);
+  const l = opts.ai ? '' : dictLang(deck);
+  if (!l && (!Sync.sb || !Sync.user)) return toast('AI機能を使うには「設定」でSupabaseにログインしてください', 5000);
+  const meta = { fromMaterial: true, note: `資料「${m.name}」p.${UI.matPage + 1} から追加`, source: { materialId: m.id, page: UI.matPage },
+    retry: () => extractFromText(chunks, notice, { ai: true }) };
+  if (l) {
+    modal(`<h3>資料から単語を抽出</h3><div class="muted" style="margin-bottom:8px">${esc(m.name)} p.${UI.matPage + 1} → 「${esc(deck.name)}」に追加</div>
+      <div id="exExtract"><div class="ctx-box muted">📖 辞書で単語を引いています…</div></div>
+      <div class="modal-actions"><span class="grow"></span><button class="btn" onclick="closeModal()">閉じる</button></div>`);
+    const items = await dictExtract(l, chunks);
+    if (!$('#exExtract')) return;
+    XTR = { ready: true, deckId: deck.id, examples: chunks.map(text => ({ text, translation: '' })), srcTerm: '', items: buildCandidates(items), byDict: true, ...meta };
+    return renderExtract();
+  }
   modal(`<h3>資料から単語・熟語を抽出</h3><div class="muted" style="margin-bottom:8px">${esc(m.name)} p.${UI.matPage + 1} → 「${esc(deck.name)}」に追加</div>
     ${notice ? `<div class="warn" style="margin-bottom:8px">${esc(notice)}</div>` : ''}<div id="exExtract"></div>
     <div class="modal-actions"><span class="grow"></span><button class="btn" onclick="closeModal()">閉じる</button></div>`);
@@ -1381,8 +1495,7 @@ async function extractFromText(chunks, notice) {
     const items = parts.flatMap(p => p.status === 'fulfilled' ? p.value : []);
     const failed = parts.filter(p => p.status === 'rejected').length;
     if (failed) toast(`一部（${failed}/${parts.length}）の抽出に失敗しました。表示されているのは成功した分だけです`, 6000);
-    XTR = { ready: true, deckId: deck.id, examples: chunks.map(text => ({ text, translation: '' })), srcTerm: '', items: buildCandidates(items),
-      fromMaterial: true, note: `資料「${m.name}」p.${UI.matPage + 1} から追加`, source: { materialId: m.id, page: UI.matPage } };
+    XTR = { ready: true, deckId: deck.id, examples: chunks.map(text => ({ text, translation: '' })), srcTerm: '', items: buildCandidates(items), ...meta };
     renderExtract();
   } catch (e) { clearInterval(timer); XTR = { ready: true, items: [] }; const b = $('#exExtract'); if (b) b.innerHTML = `<div class="ctx-box warn">抽出に失敗：${esc(e.message)}</div>`; }
 }
@@ -1403,6 +1516,10 @@ function renderSettings() {
     <h3>「聞く」「書く」の答え合わせ</h3>
     <label class="check"><input type="checkbox" ${ANS.ignoreCP ? 'checked' : ''} onchange="ANS.ignoreCP=this.checked;try{localStorage.setItem('tango.ignoreCP',this.checked?'1':'0')}catch(e){}"> カンマ（,）とピリオド（.）は無視する</label>
     <p class="hint">・逆さの ¿ ¡ は入力しなくてOKです。ふつうの ? と ! は必要です（全角の ？！ でもOK）<br>・大文字と小文字、全角と半角は区別しません<br>・アクセント記号（á・ñ など）だけが違うときは「惜しい」になります<br>・「話す」は記号を無視して、言葉だけで判定します</p></div>
+  <div class="panel"><h2>辞書データについて</h2>
+    <p class="muted" style="margin:0">「✨ 自動入力」と単語の抽出には、次の辞書データを使っています（AIの無料枠を使いません）。<br>
+    ・スペイン語：<a href="https://en.wiktionary.org/" target="_blank" rel="noopener">Wiktionary</a>（<a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>）を <a href="https://kaikki.org/" target="_blank" rel="noopener">kaikki.org / wiktextract</a> 経由で加工したもの<br>
+    ・英語：<a href="https://github.com/kujirahand/EJDict" target="_blank" rel="noopener">EJDict</a>（パブリックドメイン）</p></div>
   <div class="panel"><h2>データの削除</h2><button class="btn danger" onclick="wipeAll()">すべてのデータを削除</button></div>`;
 }
 function exportData() {
@@ -1419,7 +1536,7 @@ async function importData(file) {
     if (!Array.isArray(data.decks) || !Array.isArray(data.cards)) throw new Error('形式が正しくありません');
     if (!confirm(`単語帳 ${data.decks.length}・単語 ${data.cards.length}・資料 ${(data.materials || []).length} を読み込みます。同じデータは上書きされます。よろしいですか？`)) return;
     for (const d of data.decks) await save('decks', d);
-    for (const c of data.cards) await save('cards', { ...c, srs: c.srs || newSrs(), examples: c.examples || [], tags: c.tags || [] });
+    for (const c of data.cards) await save('cards', { ...c, srs: c.srs || newSrs(), examples: c.examples || [] });
     for (const m of data.materials || []) await save('materials', m);
     S.decks.sort((a, b) => a.createdAt - b.createdAt); UI.candCache = {};
     toast('復元しました');
