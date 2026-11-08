@@ -473,24 +473,37 @@ async function aiFill() {
   if (!Sync.sb || !Sync.user) return toast('AI自動入力を使うには「設定」でSupabaseにログインしてください', 5000);
   const term = $('#eTerm').value.trim(); if (!term) return toast('先に単語を入力してください');
   const deck = deckById($('#eDeck').value), t = typeOf(deck);
-  const btn = $('#aiBtn'); btn.disabled = true; btn.textContent = '✨ 生成中…';
+  const btn = $('#aiBtn'); btn.disabled = true;
+  const t0 = Date.now(), tick = () => { const b = $('#aiBtn'); if (b?.disabled) b.textContent = `✨ 生成中… ${Math.round((Date.now() - t0) / 1000)}秒`; };
+  tick(); const timer = setInterval(tick, 1000);
   $('#aiErr')?.classList.add('hidden');
-  try {
-    const data = await callAi({
-      term, deckType: deck.type, deckName: deck.name, lang: deck.lang, posOptions: t.posOptions,
-      contexts: (EDIT?.contexts || []).map(c => c.text).slice(0, 5) });
-    if (!$('#eTerm') || $('#eTerm').value.trim() !== term) return; // 画面が変わった
-    let filled = 0;
-    const set = (id, val) => { const el = $('#' + id); if (val && !el.value.trim()) { el.value = val; filled++; } };
-    set('eReading', data.reading); set('ePos', data.pos); set('eMeaning', data.meaning); set('eUsage', data.usage); set('eNote', data.note);
-    if (t.forms) { set('eLemma', data.lemma); set('eForms', data.forms); }
-    if (data.tags?.length && !$('#eTags').value.trim()) { $('#eTags').value = data.tags.join(' '); filled++; }
-    toast(filled ? `${filled}項目を自動入力しました。内容を確認して、例文は自分で作ってください` : '空いている欄がないので、何も変更しませんでした', 5000);
-  } catch (e) {
-    toast('自動入力に失敗しました', 4000);
-    const el = $('#aiErr'); if (el) { el.textContent = '⚠ 自動入力に失敗：' + e.message; el.classList.remove('hidden'); }
+  const alive = () => $('#eTerm') && $('#eTerm').value.trim() === term; // 画面が変わっていないか
+  let filled = 0;
+  const set = (id, val) => { const el = $('#' + id); if (el && val && !el.value.trim()) { el.value = val; filled++; } };
+  const base = { term, deckType: deck.type, deckName: deck.name, lang: deck.lang, posOptions: t.posOptions, contexts: (EDIT?.contexts || []).map(c => c.text).slice(0, 5) };
+  // 語学：意味など と 活用表 を同時に頼み、届いたものから順に埋める
+  const jobs = [
+    callAi(t.forms ? { ...base, part: 'basic' } : base).then(data => {
+      if (!alive()) return;
+      set('eReading', data.reading); set('ePos', data.pos); set('eMeaning', data.meaning); set('eUsage', data.usage); set('eNote', data.note);
+      if (t.forms) set('eLemma', data.lemma);
+      if (data.tags?.length && !$('#eTags').value.trim()) { $('#eTags').value = data.tags.join(' '); filled++; }
+    }),
+  ];
+  if (t.forms) jobs.push(callAi({ mode: 'forms', term, lang: deck.lang, deckType: deck.type, deckName: deck.name }).then(data => {
+    if (!alive()) return;
+    if (!$('#eLemma').value.trim()) set('eLemma', data.lemma);
+    if (!$('#eLemma').value.trim()) set('eForms', data.forms); // 変化形のカードには活用表を入れない
+  }));
+  const results = await Promise.allSettled(jobs);
+  clearInterval(timer);
+  const b = $('#aiBtn'); if (b) { b.disabled = false; b.textContent = '✨ AIで自動入力'; }
+  const err = results.find(r => r.status === 'rejected')?.reason;
+  if (err && alive()) {
+    const el = $('#aiErr'); if (el) { el.textContent = '⚠ ' + (filled ? '一部だけ入力できました：' : '自動入力に失敗：') + err.message; el.classList.remove('hidden'); }
   }
-  finally { const b = $('#aiBtn'); if (b) { b.disabled = false; b.textContent = '✨ AIで自動入力'; } }
+  if (!alive()) return;
+  toast(filled ? `${filled}項目を自動入力しました（${Math.round((Date.now() - t0) / 1000)}秒）。例文は自分で作ってください` : err ? '自動入力に失敗しました' : '空いている欄がないので、何も変更しませんでした', 5000);
 }
 
 /* ---------- 例文から単語・熟語を抽出して追加 ---------- */
@@ -599,20 +612,30 @@ async function addExtracted() {
   if (t.forms && lemmaIds.length) fillLemmaCards(lemmaIds, deck);
 }
 // 新しく追加した原形カードに、活用・変化表などをAIで入れる（順番に。空いている欄だけ）
+// 同時にn件ずつ並行して処理する
+async function runPool(items, n, fn) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (next < items.length) { const i = next++; await fn(items[i], i); } }));
+}
 async function fillLemmaCards(ids, deck) {
-  let fail = 0;
-  for (const [i, id] of ids.entries()) {
-    const c = S.cards.find(x => x.id === id); if (!c) continue;
-    toast(`活用・変化の表を作成中… ${i + 1} / ${ids.length}`, 60000);
-    try {
-      const data = await callAi({ term: c.term, deckType: deck.type, deckName: deck.name, lang: deck.lang, posOptions: typeOf(deck).posOptions });
-      const cur = S.cards.find(x => x.id === id); if (!cur) continue;
-      const upd = { ...cur };
-      for (const k of ['reading', 'pos', 'usage', 'forms']) if (!upd[k] && data[k]) upd[k] = data[k];
-      if (!upd.note || upd.note.startsWith('「')) upd.note = [data.note, upd.note].filter(Boolean).join('\n');
+  let fail = 0, done = 0;
+  const base = { deckType: deck.type, deckName: deck.name, lang: deck.lang, posOptions: typeOf(deck).posOptions };
+  toast(`活用・変化の表を作成中… 0 / ${ids.length}`, 120000);
+  await runPool(ids, 2, async id => {
+    const c = S.cards.find(x => x.id === id); if (!c) return;
+    // 意味など と 活用表 を同時に頼む
+    const [basic, forms] = await Promise.allSettled([callAi({ ...base, term: c.term, part: 'basic' }), callAi({ ...base, mode: 'forms', term: c.term })]);
+    const cur = S.cards.find(x => x.id === id);
+    if (cur && (basic.status === 'fulfilled' || forms.status === 'fulfilled')) {
+      const upd = { ...cur }, b = basic.value || {}, f = forms.value || {};
+      for (const k of ['reading', 'pos', 'usage']) if (!upd[k] && b[k]) upd[k] = b[k];
+      if (!upd.forms && f.forms) upd.forms = f.forms;
+      if (b.note && (!upd.note || upd.note.startsWith('「'))) upd.note = [b.note, upd.note].filter(Boolean).join('\n');
       await save('cards', upd);
-    } catch (e) { fail++; }
-  }
+    }
+    if (forms.status === 'rejected') fail++;
+    toast(`活用・変化の表を作成中… ${++done} / ${ids.length}`, 120000);
+  });
   toast(fail ? `活用表の作成に失敗した単語が${fail}件あります（あとで「✨ AIで自動入力」で入れられます）` : '活用・変化の表を入れました', 6000);
   if (UI.view === 'list') renderListItems();
 }
@@ -1343,14 +1366,25 @@ async function extractFromText(chunks, notice) {
   modal(`<h3>資料から単語・熟語を抽出</h3><div class="muted" style="margin-bottom:8px">${esc(m.name)} p.${UI.matPage + 1} → 「${esc(deck.name)}」に追加</div>
     ${notice ? `<div class="warn" style="margin-bottom:8px">${esc(notice)}</div>` : ''}<div id="exExtract"></div>
     <div class="modal-actions"><span class="grow"></span><button class="btn" onclick="closeModal()">閉じる</button></div>`);
-  $('#exExtract').innerHTML = '<div class="ctx-box muted">✨ 資料から単語を探しています…（長い文章だと少しかかります）</div>';
+  const t0 = Date.now();
+  const showWait = () => { const b = $('#exExtract'); if (b && !XTR?.ready) b.innerHTML = `<div class="ctx-box muted">✨ 資料から単語を探しています… ${Math.round((Date.now() - t0) / 1000)}秒</div>`; };
+  XTR = null; showWait(); const timer = setInterval(showWait, 1000);
   try {
-    const data = await callAi({ mode: 'extract', source: 'material', deckType: deck.type, deckName: deck.name, lang: deck.lang, posOptions: typeOf(deck).posOptions, examples: chunks });
+    // 長い文章は3かたまりずつに分けて、同時に頼む（届いた結果を文章の順に並べ直す）
+    const groups = []; for (let i = 0; i < chunks.length; i += 3) groups.push(i);
+    const parts = await Promise.allSettled(groups.map(start => callAi({ mode: 'extract', source: 'material', deckType: deck.type, deckName: deck.name,
+      lang: deck.lang, posOptions: typeOf(deck).posOptions, examples: chunks.slice(start, start + 3) })
+      .then(d => (d.items || []).map(it => ({ ...it, ex: it.ex >= 0 ? it.ex + start : -1 })))));
+    clearInterval(timer);
     if (!$('#exExtract')) return;
-    XTR = { deckId: deck.id, examples: chunks.map(text => ({ text, translation: '' })), srcTerm: '', items: buildCandidates(data.items || []),
+    if (parts.every(p => p.status === 'rejected')) throw parts[0].reason;
+    const items = parts.flatMap(p => p.status === 'fulfilled' ? p.value : []);
+    const failed = parts.filter(p => p.status === 'rejected').length;
+    if (failed) toast(`一部（${failed}/${parts.length}）の抽出に失敗しました。表示されているのは成功した分だけです`, 6000);
+    XTR = { ready: true, deckId: deck.id, examples: chunks.map(text => ({ text, translation: '' })), srcTerm: '', items: buildCandidates(items),
       fromMaterial: true, note: `資料「${m.name}」p.${UI.matPage + 1} から追加`, source: { materialId: m.id, page: UI.matPage } };
     renderExtract();
-  } catch (e) { const b = $('#exExtract'); if (b) b.innerHTML = `<div class="ctx-box warn">抽出に失敗：${esc(e.message)}</div>`; }
+  } catch (e) { clearInterval(timer); XTR = { ready: true, items: [] }; const b = $('#exExtract'); if (b) b.innerHTML = `<div class="ctx-box warn">抽出に失敗：${esc(e.message)}</div>`; }
 }
 function searchSelection() {
   const q = UI.selText.trim().replace(/\s+/g, ' '); hideSelPop();

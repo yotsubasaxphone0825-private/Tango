@@ -26,16 +26,30 @@ const SCHEMA = {
   required: ["reading", "pos", "meaning", "usage", "note", "tags", "lemma", "forms"],
 };
 
+// 意味などだけ（活用表なし）：活用表は別のリクエストで同時に作ると速い
+const { forms: _forms, ...BASIC_PROPS } = SCHEMA.properties;
+const SCHEMA_BASIC = { type: "OBJECT", properties: BASIC_PROPS, required: SCHEMA.required.filter((k) => k !== "forms") };
+// 活用表だけ（mode: "forms"）
+const SCHEMA_FORMS = { type: "OBJECT", properties: { lemma: SCHEMA.properties.lemma, forms: SCHEMA.properties.forms }, required: ["lemma", "forms"] };
+
 // 活用・変化表の書き方（語学の単語帳）
-const FORMS_GUIDE = `- forms: 単語が原形（辞書形）のときだけ、活用・変化を1行に1つ「ラベル: 形」で書く。変化しない語は空文字
+const FORMS_RULES = `- forms: 単語が原形（辞書形）のときだけ、活用・変化を1行に1つ「ラベル: 形」で書く。変化しない語は空文字
   - 動詞（スペイン語など）: 直説法現在・点過去・線過去・未来・過去未来（条件法）・接続法現在 をそれぞれ6人称（yo / tú / él / nosotros / vosotros / ellos）、命令法 tú、過去分詞、現在分詞
     例「点過去 yo: fui」「未来 nosotros: iremos」「過去分詞: ido」
   - 英語の動詞: 三単現・過去形・過去分詞・-ing形
   - 名詞: 性・単数・複数
   - 形容詞: 男性単数・女性単数・男性複数・女性複数（英語なら比較級・最上級）
-  - 冠詞・指示詞・所有詞・代名詞: 性・数・格による形（例「女性単数: la」「男性複数: los」）
-- lemma: 入力された単語が活用・変化した形（例：fui, iremos, la）なら原形（ir, el）。原形そのものなら空文字
+  - 冠詞・指示詞・所有詞・代名詞: 性・数・格による形（例「女性単数: la」「男性複数: los」）`;
+const LEMMA_RULES = `- lemma: 入力された単語が活用・変化した形（例：fui, iremos, la）なら原形（ir, el）。原形そのものなら空文字
   - 変化した形の場合、meaning は「ir（行く）の点過去・1人称単数」のように、原形と変化の種類を最初に書き、そのあとに意味を書く。forms は空文字`;
+const FORMS_GUIDE = `${FORMS_RULES}\n${LEMMA_RULES}`;
+
+function buildFormsPrompt(b: Record<string, unknown>) {
+  return `単語: ${str(b.term, 200)}（言語コード: ${str(b.lang, 20) || "不明"}）
+この単語の活用・変化表だけを作ってください。
+${FORMS_RULES}
+- lemma: この単語が変化した形なら原形を書き、forms は空文字。原形そのものなら lemma は空文字`;
+}
 
 const SYSTEM = `あなたは日本語話者の単語学習を手伝う辞書編集者です。
 指定された単語について、単語帳のカードに載せる項目をJSONで返します。
@@ -61,7 +75,7 @@ function buildPrompt(b: Record<string, unknown>) {
 - usage: 用法・ニュアンス・よく一緒に使う語・不規則活用や複数形など、覚えるべき文法情報
 - note: 似た語・紛らわしい語との違いや覚え方（なければ空）
 - tags: 例「日常会話」「旅行」「動詞活用」など
-${FORMS_GUIDE}`;
+${b.part === "basic" ? LEMMA_RULES : FORMS_GUIDE}`;
   } else if (deckType === "it") {
     guide = `単語帳「${deckName}」のIT用語です。学習者はITパスポート・基本情報技術者試験の受験者です。
 - reading: 読み方。略語なら正式名称（英語）と日本語訳
@@ -183,9 +197,10 @@ Deno.serve(async (req) => {
     if (!Array.isArray(body.examples) || !body.examples.some((e) => str(e))) return json({ error: "例文が空です" }, 400);
   } else if (!str(body.term)) return json({ error: "単語が空です" }, 400);
 
-  const prompt = extract ? buildExtractPrompt(body) : buildPrompt(body);
+  const formsOnly = body.mode === "forms";
+  const prompt = extract ? buildExtractPrompt(body) : formsOnly ? buildFormsPrompt(body) : buildPrompt(body);
   const system = extract ? SYSTEM_EXTRACT : SYSTEM;
-  const schema = extract ? SCHEMA_EXTRACT : SCHEMA;
+  const schema = extract ? SCHEMA_EXTRACT : formsOnly ? SCHEMA_FORMS : body.part === "basic" ? SCHEMA_BASIC : SCHEMA;
   // 速さ優先：考える量（thinking）を最小に。モデルが対応していなければ順に緩める
   const callModel = async (m: string) => {
     let r!: Response;
@@ -229,6 +244,8 @@ Deno.serve(async (req) => {
   let out: Record<string, unknown>;
   try { out = JSON.parse(text.replace(/^\s*```(?:json)?\s*|\s*```\s*$/g, "")); }
   catch { return json({ error: "AIの返答を読み取れませんでした。もう一度試してください" }, 502); }
+
+  if (formsOnly) return json({ lemma: str(out.lemma, 120), forms: str(out.forms, 4000) });
 
   if (extract) {
     const n = (body.examples as unknown[]).length;
